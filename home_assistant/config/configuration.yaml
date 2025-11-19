@@ -1,0 +1,47 @@
+
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+sensor:
+  - platform: rest
+    name: "Stock AAPL"
+    resource: https://query1.finance.yahoo.com/v8/finance/chart/AAPL
+    value_template: '{{ value_json.chart.result[0].meta.regularMarketPrice }}'
+    unit_of_measurement: "USD"
+    scan_interval: 300
+
+# template:
+#   - sensor:
+#       - name: "Temperature"
+#         unique_id: temperature
+#         state: 24.5
+#         unit_of_measurement: "°C"
+#         icon: mdi:thermometer
+
+#       - name: "Humidity"
+#         unique_id: humidity
+#         state: 50
+#         unit_of_measurement: "%"
+#         icon: mdi:water-percent
+# feedreader:
+#     urls:
+#       - https://news.google.com/rss
+#     scan_interval:
+#       minutes: 15
+
+# template:
+#   - trigger:
+#       - platform: event
+#         event_type: feedreader
+#     sensor:
+#       - name: "News Headline"
+#         unique_id: news_headline
+#         state: "{{ trigger.event.data.title }}"

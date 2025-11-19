@@ -1,0 +1,153 @@
+esphome:
+  name: workspace
+
+esp32:
+  board: esp32s3box
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  password: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjOWViOWVkMzAxZGM0MDZjYWIwMzJkOGJlNzM4YjU1YyIsImlhdCI6MTc2MzUzNDQ1NSwiZXhwIjoyMDc4ODk0NDU1fQ.5JRsm-hlNxF8g2cpR8IuiuYONgCX7dRIfgtAmmwBvPU"
+
+ota:
+  - platform: esphome
+    password: "ota"
+
+wifi:
+  ssid: "HIROL1.5F2.4"
+  password: "2025HIROL513"
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Workspace Fallback Hotspot"
+    password: "80vZ4cytFZGz"
+
+captive_portal:
+    
+time:
+  - platform: homeassistant
+    id: ha_time
+
+sensor:
+  # 温度
+  - platform: homeassistant
+    id: temperature
+    entity_id: sensor.temperature
+    
+  # 湿度
+  - platform: homeassistant
+    id: humidity
+    entity_id: sensor.humidity
+    
+  # 股票价格（需要在 HA 中配置）
+  - platform: homeassistant
+    id: stock_price
+    entity_id: sensor.stock_aapl
+
+text_sensor:
+  # 天气状态
+  # - platform: homeassistant
+  #   id: weather_condition
+  #   entity_id: weather.home
+
+  # 今日事项
+  - platform: homeassistant
+    id: calendar_event
+    entity_id: calendar.personal
+
+  # 新闻标题
+  - platform: homeassistant
+    id: news_headline
+    entity_id: sensor.news_headline
+
+# 显示配置
+display:
+  - platform: ili9xxx
+    model: S3BOX
+    id: my_display
+    update_interval: 5s
+    lambda: |-
+      // 背景
+      it.fill(COLOR_BLACK);
+      
+      // 标题栏 - 时间
+      it.strftime(10, 10, id(font_large), COLOR_WHITE, 
+                  TextAlign::TOP_LEFT, "%H:%M", id(ha_time).now());
+      it.strftime(10, 50, id(font_small), COLOR_GRAY, 
+                  TextAlign::TOP_LEFT, "%Y-%m-%d %A", id(ha_time).now());
+      
+      // 分隔线
+      it.line(0, 80, 320, 80, COLOR_GRAY);
+      
+      // 天气和温湿度
+      it.printf(10, 90, id(font_medium), COLOR_CYAN, "天气:");
+      if (id(weather_condition).has_state()) {
+        it.printf(80, 90, id(font_medium), COLOR_WHITE, 
+                  "%s", id(weather_condition).state.c_str());
+      }
+      
+      it.printf(10, 120, id(font_medium), COLOR_ORANGE, "温度:");
+      if (id(temperature).has_state()) {
+        it.printf(80, 120, id(font_medium), COLOR_WHITE, 
+                  "%.1f°C", id(temperature).state);
+      }
+      
+      it.printf(180, 120, id(font_medium), COLOR_BLUE, "湿度:");
+      if (id(humidity).has_state()) {
+        it.printf(240, 120, id(font_medium), COLOR_WHITE, 
+                  "%.0f%%", id(humidity).state);
+      }
+      
+      // 分隔线
+      it.line(0, 150, 320, 150, COLOR_GRAY);
+      
+      // 日历事项
+      it.printf(10, 160, id(font_medium), COLOR_GREEN, "今日事项:");
+      if (id(calendar_event).has_state()) {
+        it.printf(10, 185, id(font_small), COLOR_WHITE, 
+                  "%s", id(calendar_event).state.c_str());
+      }
+      
+      // 股票信息
+      it.printf(10, 215, id(font_medium), COLOR_YELLOW, "股票:");
+      if (id(stock_price).has_state()) {
+        it.printf(80, 215, id(font_medium), COLOR_WHITE, 
+                  "$%.2f", id(stock_price).state);
+      }
+
+# 字体配置
+# font:
+#   - file: "fonts/Arial.ttf"
+#     id: font_small
+#     size: 14
+    
+#   - file: "fonts/Arial.ttf"
+#     id: font_medium
+#     size: 20
+    
+#   - file: "fonts/Arial.ttf"
+#     id: font_large
+#     size: 36
+
+# 颜色定义
+color:
+  - id: COLOR_BLACK
+    hex: "000000"
+  - id: COLOR_WHITE
+    hex: "FFFFFF"
+  - id: COLOR_GRAY
+    hex: "808080"
+  - id: COLOR_CYAN
+    hex: "00FFFF"
+  - id: COLOR_ORANGE
+    hex: "FFA500"
+  - id: COLOR_BLUE
+    hex: "0000FF"
+  - id: COLOR_GREEN
+    hex: "00FF00"
+  - id: COLOR_YELLOW
+    hex: "FFFF00"

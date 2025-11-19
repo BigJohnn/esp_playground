@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "minor_version": 1,
+  "key": "person",
+  "data": {
+    "items": [
+      {
+        "id": "hou_peihong",
+        "name": "Hou Peihong",
+        "user_id": "21c7638256ca4b698782ac362b6b0faf",
+        "device_trackers": []
+      }
+    ]
+  }
+}

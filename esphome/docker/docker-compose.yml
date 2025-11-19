@@ -1,0 +1,24 @@
+
+services:
+  esphome:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      # - ../:/workspace
+      - ../config:/config
+      - /run/dbus:/run/dbus:ro
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - http_proxy=
+      - https_proxy=
+      - all_proxy=
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    privileged: true
+    # user: user
+    network_mode: host
+    stdin_open: true
+    tty: true
+    
+    # command: ["tail", "-f", "/dev/null"]

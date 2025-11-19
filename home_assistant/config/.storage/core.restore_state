@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "core.restore_state",
+  "data": [
+    {
+      "state": {"entity_id":"conversation.home_assistant","state":"unknown","attributes":{"friendly_name":"Home Assistant","supported_features":1},"last_changed":"2025-11-19T07:00:26.675422+00:00","last_reported":"2025-11-19T07:00:26.675422+00:00","last_updated":"2025-11-19T07:00:26.675422+00:00","context":{"id":"01KADEM8DKCKDWWJN0F10FMWC3","parent_id":null,"user_id":null}},
+      "extra_data": null,
+      "last_seen": "2025-11-19T07:45:30.394265+00:00"
+    },
+    {
+      "state": {"entity_id":"event.backup_automatic_backup","state":"unknown","attributes":{"event_types":["completed","failed","in_progress"],"event_type":null,"friendly_name":"Backup Automatic backup"},"last_changed":"2025-11-19T07:00:26.687320+00:00","last_reported":"2025-11-19T07:00:26.687320+00:00","last_updated":"2025-11-19T07:00:26.687320+00:00","context":{"id":"01KADEM8DZQG0M27BTEHCA8K50","parent_id":null,"user_id":null}},
+      "extra_data": {
+        "last_event_type": null,
+        "last_event_attributes": null
+      },
+      "last_seen": "2025-11-19T07:45:30.394265+00:00"
+    },
+    {
+      "state": {"entity_id":"person.hou_peihong","state":"unknown","attributes":{"editable":true,"id":"hou_peihong","device_trackers":[],"user_id":"21c7638256ca4b698782ac362b6b0faf","friendly_name":"Hou Peihong"},"last_changed":"2025-11-19T07:00:26.872829+00:00","last_reported":"2025-11-19T07:00:30.393068+00:00","last_updated":"2025-11-19T07:00:30.393068+00:00","context":{"id":"01KADEMC1SM1GZZDYSCWRTAC1V","parent_id":null,"user_id":null}},
+      "extra_data": null,
+      "last_seen": "2025-11-19T07:45:30.394265+00:00"
+    },
+    {
+      "state": {"entity_id":"tts.google_translate_en_com","state":"unknown","attributes":{"friendly_name":"Google Translate en com"},"last_changed":"2025-11-19T07:00:27.392256+00:00","last_reported":"2025-11-19T07:00:27.392256+00:00","last_updated":"2025-11-19T07:00:27.392256+00:00","context":{"id":"01KADEM94041PA06013YN1M0J6","parent_id":null,"user_id":null}},
+      "extra_data": null,
+      "last_seen": "2025-11-19T07:45:30.394265+00:00"
+    },
+    {
+      "state": {"entity_id":"sensor.news_headline","state":"unknown","attributes":{"friendly_name":"News Headline"},"last_changed":"2025-11-19T07:00:27.564664+00:00","last_reported":"2025-11-19T07:00:27.564664+00:00","last_updated":"2025-11-19T07:00:27.564664+00:00","context":{"id":"01KADEM99CDYD2B5A5Q3V347C6","parent_id":null,"user_id":null}},
+      "extra_data": {
+        "native_value": null,
+        "native_unit_of_measurement": null
+      },
+      "last_seen": "2025-11-19T07:45:30.394265+00:00"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+FROM hub.rat.dev/homeassistant/home-assistant:stable
