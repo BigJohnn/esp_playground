@@ -9,9 +9,12 @@ services:
       - ../config:/config
       - /run/dbus:/run/dbus:ro
     environment:
-      - http_proxy=
-      - https_proxy=
-      - all_proxy=
+      # - http_proxy=
+      # - https_proxy=
+      # - all_proxy=
+      - http_proxy=http://127.0.0.1:7897
+      - https_proxy=http://127.0.0.1:7897
+      - all_proxy=socks5://127.0.0.1:7897
       - TZ=Asia/Shanghai
     restart: unless-stopped
     privileged: true

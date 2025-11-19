@@ -1,4 +1,3 @@
-
 # Loads default set of integrations. Do not remove.
 default_config:
 
@@ -11,37 +10,18 @@ script: !include scripts.yaml
 scene: !include scenes.yaml
 
 sensor:
-  - platform: rest
-    name: "Stock AAPL"
-    resource: https://query1.finance.yahoo.com/v8/finance/chart/AAPL
-    value_template: '{{ value_json.chart.result[0].meta.regularMarketPrice }}'
-    unit_of_measurement: "USD"
+  # 股票价格（使用 HACS 安装的 yahoofinance 集成，快手 HK1024）
+  - platform: yahoofinance
     scan_interval: 300
+    show_trending_icon: true
+    symbols:
+      - 1024.HK
 
-# template:
-#   - sensor:
-#       - name: "Temperature"
-#         unique_id: temperature
-#         state: 24.5
-#         unit_of_measurement: "°C"
-#         icon: mdi:thermometer
-
-#       - name: "Humidity"
-#         unique_id: humidity
-#         state: 50
-#         unit_of_measurement: "%"
-#         icon: mdi:water-percent
-# feedreader:
-#     urls:
-#       - https://news.google.com/rss
-#     scan_interval:
-#       minutes: 15
-
-# template:
-#   - trigger:
-#       - platform: event
-#         event_type: feedreader
-#     sensor:
-#       - name: "News Headline"
-#         unique_id: news_headline
-#         state: "{{ trigger.event.data.title }}"
+template:
+  - trigger:
+      - platform: event
+        event_type: feedreader
+    sensor:
+      - name: "News Headline"
+        unique_id: news_headline
+        state: "{{ trigger.event.data.title }}"

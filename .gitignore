@@ -1,0 +1,6 @@
+home_assistant/config/*.log*
+home_assistant/config/.*
+home_assistant/config/blueprints
+home_assistant/config/deps
+home_assistant/config/tts
+home_assistant/config/*.db*

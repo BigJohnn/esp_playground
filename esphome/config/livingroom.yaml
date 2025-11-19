@@ -1,5 +1,14 @@
 esphome:
   name: workspace
+  on_boot:
+    priority: 800
+    then:
+      - output.turn_on: lcd_ctrl
+
+external_components:
+  - source:
+      type: local
+      path: custom_components
 
 esp32:
   board: esp32s3box
@@ -11,15 +20,15 @@ logger:
 
 # Enable Home Assistant API
 api:
-  password: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjOWViOWVkMzAxZGM0MDZjYWIwMzJkOGJlNzM4YjU1YyIsImlhdCI6MTc2MzUzNDQ1NSwiZXhwIjoyMDc4ODk0NDU1fQ.5JRsm-hlNxF8g2cpR8IuiuYONgCX7dRIfgtAmmwBvPU"
+  password: !secret api_password
 
 ota:
   - platform: esphome
-    password: "ota"
+    password: !secret ota_password
 
 wifi:
-  ssid: "HIROL1.5F2.4"
-  password: "2025HIROL513"
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
 
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
@@ -27,33 +36,50 @@ wifi:
     password: "80vZ4cytFZGz"
 
 captive_portal:
-    
+
 time:
   - platform: homeassistant
     id: ha_time
 
+i2c:
+  - id: i2c_sensors
+    sda: 41      # SENSOR 底座 SDA
+    scl: 40      # SENSOR 底座 SCL
+    scan: true
+
 sensor:
-  # 温度
-  - platform: homeassistant
-    id: temperature
-    entity_id: sensor.temperature
-    
-  # 湿度
-  - platform: homeassistant
-    id: humidity
-    entity_id: sensor.humidity
-    
-  # 股票价格（需要在 HA 中配置）
+  # ESP32-S3-BOX-3-SENSOR 底座上的 AHT20 温湿度
+  - platform: aht10
+    variant: AHT20
+    i2c_id: i2c_sensors
+    temperature:
+      id: temperature
+      name: "Workspace Temperature"
+    humidity:
+      id: humidity
+      name: "Workspace Humidity"
+    update_interval: 1s
+
+  # 股票价格（从 Home Assistant 获取，快手 HK1024）
   - platform: homeassistant
     id: stock_price
-    entity_id: sensor.stock_aapl
+    entity_id: sensor.1024_hk
+
+binary_sensor:
+  # 24GHz 雷达人体存在检测（AT581x，数字输出接 GPIO21）
+  - platform: gpio
+    id: radar_presence
+    name: "Workspace Presence"
+    device_class: occupancy
+    pin:
+      number: GPIO21
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_off: 120s   # 2 分钟无人才判定为离开
 
 text_sensor:
-  # 天气状态
-  # - platform: homeassistant
-  #   id: weather_condition
-  #   entity_id: weather.home
-
   # 今日事项
   - platform: homeassistant
     id: calendar_event
@@ -64,74 +90,102 @@ text_sensor:
     id: news_headline
     entity_id: sensor.news_headline
 
-# 显示配置
-display:
-  - platform: ili9xxx
-    model: S3BOX
-    id: my_display
-    update_interval: 5s
-    lambda: |-
-      // 背景
-      it.fill(COLOR_BLACK);
-      
-      // 标题栏 - 时间
-      it.strftime(10, 10, id(font_large), COLOR_WHITE, 
-                  TextAlign::TOP_LEFT, "%H:%M", id(ha_time).now());
-      it.strftime(10, 50, id(font_small), COLOR_GRAY, 
-                  TextAlign::TOP_LEFT, "%Y-%m-%d %A", id(ha_time).now());
-      
-      // 分隔线
-      it.line(0, 80, 320, 80, COLOR_GRAY);
-      
-      // 天气和温湿度
-      it.printf(10, 90, id(font_medium), COLOR_CYAN, "天气:");
-      if (id(weather_condition).has_state()) {
-        it.printf(80, 90, id(font_medium), COLOR_WHITE, 
-                  "%s", id(weather_condition).state.c_str());
-      }
-      
-      it.printf(10, 120, id(font_medium), COLOR_ORANGE, "温度:");
-      if (id(temperature).has_state()) {
-        it.printf(80, 120, id(font_medium), COLOR_WHITE, 
-                  "%.1f°C", id(temperature).state);
-      }
-      
-      it.printf(180, 120, id(font_medium), COLOR_BLUE, "湿度:");
-      if (id(humidity).has_state()) {
-        it.printf(240, 120, id(font_medium), COLOR_WHITE, 
-                  "%.0f%%", id(humidity).state);
-      }
-      
-      // 分隔线
-      it.line(0, 150, 320, 150, COLOR_GRAY);
-      
-      // 日历事项
-      it.printf(10, 160, id(font_medium), COLOR_GREEN, "今日事项:");
-      if (id(calendar_event).has_state()) {
-        it.printf(10, 185, id(font_small), COLOR_WHITE, 
-                  "%s", id(calendar_event).state.c_str());
-      }
-      
-      // 股票信息
-      it.printf(10, 215, id(font_medium), COLOR_YELLOW, "股票:");
-      if (id(stock_price).has_state()) {
-        it.printf(80, 215, id(font_medium), COLOR_WHITE, 
-                  "$%.2f", id(stock_price).state);
-      }
+output:
+  - platform: gpio
+    id: lcd_ctrl
+    pin: GPIO47
+    inverted: true
 
-# 字体配置
-# font:
-#   - file: "fonts/Arial.ttf"
-#     id: font_small
-#     size: 14
-    
-#   - file: "fonts/Arial.ttf"
-#     id: font_medium
-#     size: 20
-    
-#   - file: "fonts/Arial.ttf"
-#     id: font_large
-#     size: 36
+display:
+  - platform: box3_lcd
+    id: my_display
+    temperature: temperature
+    humidity: humidity
+    radar: radar_presence
+    stock: stock_price
+    calendar: calendar_event
+    news: news_headline
+    time_id: ha_time
+
+# it.fill(COLOR_BLUE);
+# it.fill(COLOR_BLACK);
+# // 先继续用测试画面，确认能稳定写屏
+# it.printf(160, 120, id(font_large), COLOR_WHITE,
+#           TextAlign::CENTER, "TEST");
+# 显示配置
+# display:
+#   - platform: ili9xxx
+#     model: S3BOX
+#     invert_colors: true
+#     cs_pin: GPIO2          # LCD_CS
+#     dc_pin: GPIO0          # LCD_DC
+#     id: my_display
+#     update_interval: 5s
+#     lambda: |-
+#       // 背景
+#       it.fill(COLOR_BLACK);
+
+#       // 标题栏 - 时间
+#       it.strftime(10, 10, id(font_large), COLOR_WHITE,
+#                   TextAlign::TOP_LEFT, "%H:%M", id(ha_time).now());
+#       it.strftime(10, 50, id(font_small), COLOR_GRAY,
+#                   TextAlign::TOP_LEFT, "%Y-%m-%d %A", id(ha_time).now());
+
+#       // 分隔线
+#       it.line(0, 80, 320, 80, COLOR_GRAY);
+
+#       // 在家状态 + 温湿度（来自底座 AHT20 + 雷达）
+#       it.printf(10, 90, id(font_medium), COLOR_CYAN, "在家:");
+#       if (id(radar_presence).has_state()) {
+#         it.printf(80, 90, id(font_medium), COLOR_WHITE,
+#                   "%s", id(radar_presence).state ? "有人" : "无人");
+#       }
+
+#       it.printf(10, 120, id(font_medium), COLOR_ORANGE, "温度:");
+#       if (!isnan(id(temperature).state)) {
+#         it.printf(80, 120, id(font_medium), COLOR_WHITE,
+#                   "%.1f°C", id(temperature).state);
+#       }
+
+#       it.printf(180, 120, id(font_medium), COLOR_BLUE, "湿度:");
+#       if (!isnan(id(humidity).state)) {
+#         it.printf(240, 120, id(font_medium), COLOR_WHITE,
+#                   "%.0f%%", id(humidity).state);
+#       }
+
+#       // 分隔线
+#       it.line(0, 150, 320, 150, COLOR_GRAY);
+
+#       // 日历事项
+#       it.printf(10, 160, id(font_medium), COLOR_GREEN, "今日事项:");
+#       if (id(calendar_event).has_state()) {
+#         it.printf(10, 185, id(font_small), COLOR_WHITE,
+#                   "%s", id(calendar_event).state.c_str());
+#       }
+
+#       // 股票信息
+#       it.printf(10, 215, id(font_medium), COLOR_YELLOW, "股票:");
+#       if (id(stock_price).has_state()) {
+#         it.printf(80, 215, id(font_medium), COLOR_WHITE,
+#                   "$%.2f", id(stock_price).state);
+#       }
+
+# 字体配置（请确保对应 TTF 文件存在）
+font:
+  - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
+    id: font_small
+    size: 14
+    glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
+
+  - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
+    id: font_medium
+    size: 20
+    glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
+
+  - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
+    id: font_large
+    size: 36
+    glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
 
 # 颜色定义
 color:
@@ -151,3 +205,7 @@ color:
     hex: "00FF00"
   - id: COLOR_YELLOW
     hex: "FFFF00"
+  - id: my_red
+    red: 100%
+    green: 3%
+    blue: 5%
