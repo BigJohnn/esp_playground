@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <string>
 #include <cstdio>
+#include <cctype>
 
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
@@ -120,6 +121,7 @@ class Box3LCD : public display::DisplayBuffer {
   void set_outdoor_temperature_sensor(sensor::Sensor *s) { this->outdoor_temperature_ = s; }
   void set_podcast_sensor(text_sensor::TextSensor *s) { this->podcast_ = s; }
   void set_time(time::RealTimeClock *t) { this->time_ = t; }
+  void set_canvas(uint8_t c) { this->canvas_ = static_cast<uint8_t>(c % 3); }
 
  protected:
   void draw_absolute_pixel_internal(int x, int y, Color color) override {
@@ -140,6 +142,21 @@ class Box3LCD : public display::DisplayBuffer {
     const uint16_t COLOR_HEAD  = 0xF800;  // header: green (per your calibration)
     const uint16_t COLOR_CARD  = 0x07E0;  // card: red
     const uint16_t COLOR_FOOT  = 0x001F;  // footer: blue
+
+    // --- Canvas switching ---
+    // canvas_ == 0 : regular dashboard
+    // canvas_ == 1 : solid fill canvas (green)
+    // canvas_ == 2 : solid fill canvas (blue)
+    if (this->canvas_ == 1) {
+      std::fill(buffer_.begin(), buffer_.end(), COLOR_CARD);  // green-ish canvas
+      this->flush_();
+      return;
+    }
+    if (this->canvas_ == 2) {
+      std::fill(buffer_.begin(), buffer_.end(), COLOR_FOOT);  // blue canvas
+      this->flush_();
+      return;
+    }
 
     // Clear background
     std::fill(buffer_.begin(), buffer_.end(), COLOR_BG);
@@ -225,6 +242,9 @@ class Box3LCD : public display::DisplayBuffer {
       }
     }
 
+    // Simple weather icon near the right side of the center card
+    this->draw_weather_icon_(card_x1 + 16, card_y0 + card_h / 2);
+
     // Presence indicator on header (small square on right)
     if (this->radar_ != nullptr && this->radar_->has_state()) {
       bool present = this->radar_->state;
@@ -272,7 +292,8 @@ class Box3LCD : public display::DisplayBuffer {
     // ---- Text overlays ----
     const uint16_t COLOR_TEXT = 0xFFFF;  // try white-ish for text
 
-    // Header: show latest Home Assistant podcast time in a compact, local format
+    // Header: show latest Home Assistant podcast time in a compact, local format;
+    // fallback to current clock time if podcast state is not available.
     // Use a 2x scaled font to make it larger and visually bolder.
     const int HEADER_TEXT_Y = 8;
     if (this->podcast_ != nullptr && this->podcast_->has_state()) {
@@ -285,6 +306,15 @@ class Box3LCD : public display::DisplayBuffer {
         text = text.substr(0, max_chars);
       }
       this->draw_text_scaled_(4, HEADER_TEXT_Y, text, COLOR_TEXT, HEADER_SCALE);
+    } else if (this->time_ != nullptr) {
+      auto now = this->time_->now();
+      if (now.is_valid()) {
+        char buf[16];
+        // Simple local time display HH:MM
+        std::snprintf(buf, sizeof(buf), "%02d:%02d", now.hour, now.minute);
+        const int HEADER_SCALE = 2;
+        this->draw_text_scaled_(4, HEADER_TEXT_Y, buf, COLOR_TEXT, HEADER_SCALE);
+      }
     }
 
     // Center card: numeric temperature and humidity (scaled 2x for better readability)
@@ -494,16 +524,18 @@ class Box3LCD : public display::DisplayBuffer {
     this->set_address_window_(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1);
     this->write_cmd_(0x2C);  // Memory write
 
-    // Send rows in reverse order (vertical flip) and mirror horizontally to match panel orientation
-    uint8_t rowbuf[LCD_WIDTH * 2];  // one row of RGB565 (little-endian)
+    // Send rows in reverse order (vertical flip) and mirror horizontally to match panel orientation.
+    // The panel expects RGB565 data in big-endian order (high byte first), matching the ESP-BOX
+    // examples which use BSP_LCD_BIGENDIAN + swap_color_bytes.
+    uint8_t rowbuf[LCD_WIDTH * 2];  // one row of RGB565 (big-endian on wire)
     for (int y = 0; y < LCD_HEIGHT; y++) {
       int src_y = LCD_HEIGHT - 1 - y;  // flip vertically
       const uint16_t *src = &buffer_[src_y * LCD_WIDTH];
       for (int x = 0; x < LCD_WIDTH; x++) {
         int src_x = LCD_WIDTH - 1 - x;  // flip horizontally
         uint16_t v = src[src_x];
-        rowbuf[2 * x]     = static_cast<uint8_t>(v & 0xFF);
-        rowbuf[2 * x + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+        rowbuf[2 * x]     = static_cast<uint8_t>((v >> 8) & 0xFF);  // high byte first
+        rowbuf[2 * x + 1] = static_cast<uint8_t>(v & 0xFF);         // then low byte
       }
       this->write_data_(rowbuf, LCD_WIDTH * 2);
     }
@@ -522,6 +554,7 @@ class Box3LCD : public display::DisplayBuffer {
   sensor::Sensor *outdoor_temperature_{nullptr};
   text_sensor::TextSensor *podcast_{nullptr};
   time::RealTimeClock *time_{nullptr};
+  uint8_t canvas_{0};
 
   // --- Helper: set a single pixel in our RGB565 framebuffer ---
   inline void set_pixel_(int x, int y, uint16_t color) {
@@ -612,6 +645,98 @@ class Box3LCD : public display::DisplayBuffer {
       this->draw_char_scaled_(cx, y, c, color, scale);
       cx += adv;
       if (cx >= LCD_WIDTH) break;  // avoid overflow
+    }
+  }
+
+  // --- Helper: basic filled rectangle ---
+  void draw_filled_rect_(int x0, int y0, int w, int h, uint16_t color) {
+    if (w <= 0 || h <= 0) return;
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        this->set_pixel_(x0 + x, y0 + y, color);
+      }
+    }
+  }
+
+  // --- Helper: basic filled circle (naive rasterization, fine for small icons) ---
+  void draw_filled_circle_(int cx, int cy, int r, uint16_t color) {
+    if (r <= 0) return;
+    int rr = r * r;
+    for (int dy = -r; dy <= r; dy++) {
+      int yy = dy * dy;
+      for (int dx = -r; dx <= r; dx++) {
+        int xx = dx * dx;
+        if (xx + yy <= rr) {
+          this->set_pixel_(cx + dx, cy + dy, color);
+        }
+      }
+    }
+  }
+
+  // --- Helper: draw a simple sun icon (vector) ---
+  void draw_sun_icon_(int cx, int cy) {
+    // Tune this constant based on your panel's color mapping; this value
+    // should appear as a warm yellow on your ESP32-S3-BOX-3.
+    const uint16_t COLOR_SUN = 0xFFE0;  // target: yellow
+    const int R_CORE = 10;
+    this->draw_filled_circle_(cx, cy, R_CORE, COLOR_SUN);
+
+    // Simple cross-shaped rays
+    const int RAY_LEN = 14;
+    const int RAY_THICK = 3;
+
+    // Up
+    this->draw_filled_rect_(cx - RAY_THICK / 2, cy - R_CORE - RAY_LEN, RAY_THICK, RAY_LEN, COLOR_SUN);
+    // Down
+    this->draw_filled_rect_(cx - RAY_THICK / 2, cy + R_CORE, RAY_THICK, RAY_LEN, COLOR_SUN);
+    // Left
+    this->draw_filled_rect_(cx - R_CORE - RAY_LEN, cy - RAY_THICK / 2, RAY_LEN, RAY_THICK, COLOR_SUN);
+    // Right
+    this->draw_filled_rect_(cx + R_CORE, cy - RAY_THICK / 2, RAY_LEN, RAY_THICK, COLOR_SUN);
+  }
+
+  // --- Helper: draw a simple cloud icon (vector) ---
+  void draw_cloud_icon_(int x0, int y0) {
+    const uint16_t COLOR_CLOUD = 0xC618;  // light gray
+    // Three overlapping circles
+    int cx1 = x0 + 10;
+    int cx2 = x0 + 20;
+    int cx3 = x0 + 30;
+    int cy  = y0 + 10;
+    int r1 = 8, r2 = 10, r3 = 8;
+
+    this->draw_filled_circle_(cx1, cy, r1, COLOR_CLOUD);
+    this->draw_filled_circle_(cx2, cy - 2, r2, COLOR_CLOUD);
+    this->draw_filled_circle_(cx3, cy, r3, COLOR_CLOUD);
+
+    // Base rectangle
+    this->draw_filled_rect_(x0 + 6, y0 + 10, 28, 10, COLOR_CLOUD);
+  }
+
+  // --- Helper: draw a weather icon based on Home Assistant weather text ---
+  void draw_weather_icon_(int cx, int cy) {
+    if (this->news_ == nullptr || !this->news_->has_state()) {
+      return;
+    }
+    std::string state = this->news_->state;
+    if (state.empty()) return;
+
+    // Lowercase for easier substring matching
+    std::string lower;
+    lower.reserve(state.size());
+    for (char c : state) {
+      lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+
+    // Very simple mapping: sunny/clear -> sun, cloud/overcast -> cloud
+    if (lower.find("sun") != std::string::npos ||
+        lower.find("clear") != std::string::npos) {
+      this->draw_sun_icon_(cx, cy);
+    } else if (lower.find("cloud") != std::string::npos ||
+               lower.find("overcast") != std::string::npos) {
+      this->draw_cloud_icon_(cx - 20, cy - 12);
+    } else {
+      // Unknown conditions: no icon for now
     }
   }
 

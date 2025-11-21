@@ -47,6 +47,13 @@ i2c:
     scl: 40      # SENSOR 底座 SCL
     scan: true
 
+  # 板载触摸 I2C 总线（ESP-BOX-3: SDA=GPIO8, SCL=GPIO18）
+  - id: i2c_touch
+    sda: 8
+    scl: 18
+    # 触摸芯片已确认在此总线上，常规使用时关闭扫描
+    scan: false
+
 sensor:
   # ESP32-S3-BOX-3-SENSOR 底座上的 AHT20 温湿度
   - platform: aht10
@@ -85,16 +92,21 @@ binary_sensor:
     filters:
       - delayed_off: 120s   # 2 分钟无人才判定为离开
 
+  # ESP32-S3-BOX-3 底部圆形 "Home" 触摸按键（GT911 外置按键 index 0）
+  - platform: gt911
+    id: home_key
+    name: "Box3 Home Key"
+    index: 0
+    on_press:
+      - logger.log: "Home key PRESSED"
+    on_release:
+      - logger.log: "Home key RELEASED"
+
 text_sensor:
   # 今日事项
   - platform: homeassistant
     id: calendar_event
     entity_id: calendar.personal
-
-  # Home Assistant Podcast（事件实体）
-  - platform: homeassistant
-    id: ha_podcast
-    entity_id: event.home_assistant_podcast
 
   # 新闻标题
   - platform: homeassistant
@@ -102,6 +114,18 @@ text_sensor:
     # 这里复用为“当前天气预报”，从 Home Assistant 天气实体读取
     # 如果你的天气实体 ID 不同，请把 weather.forecast_home 改成实际的 entity_id
     entity_id: weather.forecast_home
+
+touchscreen:
+  - platform: gt911
+    id: box3_touch
+    i2c_id: i2c_touch
+    interrupt_pin: GPIO3       # BSP_LCD_TOUCH_INT
+    # reset_pin 可选，GT911 与 LCD 共用复位逻辑，由板级电路处理
+    on_touch:
+      - lambda: |-
+          for (auto &t : touches) {
+            ESP_LOGD("gt911", "Touch: x=%d, y=%d, state=%d", t.x, t.y, (int)t.state);
+          }
 
 output:
   - platform: gpio
@@ -118,7 +142,6 @@ display:
     stock: stock_price
     calendar: calendar_event
     news: news_headline
-    podcast: ha_podcast
     outdoor_temperature: outside_temperature
     time_id: ha_time
 
