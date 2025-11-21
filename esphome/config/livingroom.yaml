@@ -65,6 +65,12 @@ sensor:
     id: stock_price
     entity_id: sensor.1024_hk
 
+  # 室外温度（来自 Home Assistant 天气实体 weather.forecast_home）
+  - platform: homeassistant
+    id: outside_temperature
+    entity_id: weather.forecast_home
+    attribute: temperature
+
 binary_sensor:
   # 24GHz 雷达人体存在检测（AT581x，数字输出接 GPIO21）
   - platform: gpio
@@ -85,10 +91,17 @@ text_sensor:
     id: calendar_event
     entity_id: calendar.personal
 
+  # Home Assistant Podcast（事件实体）
+  - platform: homeassistant
+    id: ha_podcast
+    entity_id: event.home_assistant_podcast
+
   # 新闻标题
   - platform: homeassistant
     id: news_headline
-    entity_id: sensor.news_headline
+    # 这里复用为“当前天气预报”，从 Home Assistant 天气实体读取
+    # 如果你的天气实体 ID 不同，请把 weather.forecast_home 改成实际的 entity_id
+    entity_id: weather.forecast_home
 
 output:
   - platform: gpio
@@ -105,6 +118,8 @@ display:
     stock: stock_price
     calendar: calendar_event
     news: news_headline
+    podcast: ha_podcast
+    outdoor_temperature: outside_temperature
     time_id: ha_time
 
 # it.fill(COLOR_BLUE);
@@ -171,21 +186,21 @@ display:
 #       }
 
 # 字体配置（请确保对应 TTF 文件存在）
-font:
-  - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
-    id: font_small
-    size: 14
-    glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
+# font:
+#   - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
+#     id: font_small
+#     size: 14
+#     glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
 
-  - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
-    id: font_medium
-    size: 20
-    glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
+#   - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
+#     id: font_medium
+#     size: 20
+#     glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
 
-  - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
-    id: font_large
-    size: 36
-    glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
+#   - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
+#     id: font_large
+#     size: 36
+#     glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
 
 # 颜色定义
 color:

@@ -15,6 +15,8 @@ CONF_STOCK = "stock"
 CONF_CALENDAR = "calendar"
 CONF_NEWS = "news"
 CONF_TIME = "time_id"
+CONF_OUTDOOR_TEMPERATURE = "outdoor_temperature"
+CONF_PODCAST = "podcast"
 
 CONFIG_SCHEMA = display.BASIC_DISPLAY_SCHEMA.extend(
     {
@@ -23,8 +25,10 @@ CONFIG_SCHEMA = display.BASIC_DISPLAY_SCHEMA.extend(
         cv.Optional(CONF_HUMIDITY): cv.use_id(sensor.Sensor),
         cv.Optional(CONF_RADAR): cv.use_id(binary_sensor.BinarySensor),
         cv.Optional(CONF_STOCK): cv.use_id(sensor.Sensor),
+        cv.Optional(CONF_OUTDOOR_TEMPERATURE): cv.use_id(sensor.Sensor),
         cv.Optional(CONF_CALENDAR): cv.use_id(text_sensor.TextSensor),
         cv.Optional(CONF_NEWS): cv.use_id(text_sensor.TextSensor),
+        cv.Optional(CONF_PODCAST): cv.use_id(text_sensor.TextSensor),
         cv.Optional(CONF_TIME): cv.use_id(time_comp.RealTimeClock),
     }
 ).extend(cv.polling_component_schema("1s"))
@@ -50,6 +54,10 @@ def to_code(config):
         sens = yield cg.get_variable(config[CONF_STOCK])
         cg.add(var.set_stock_sensor(sens))
 
+    if CONF_OUTDOOR_TEMPERATURE in config:
+        sens = yield cg.get_variable(config[CONF_OUTDOOR_TEMPERATURE])
+        cg.add(var.set_outdoor_temperature_sensor(sens))
+
     if CONF_CALENDAR in config:
         ts = yield cg.get_variable(config[CONF_CALENDAR])
         cg.add(var.set_calendar_sensor(ts))
@@ -57,6 +65,10 @@ def to_code(config):
     if CONF_NEWS in config:
         ts = yield cg.get_variable(config[CONF_NEWS])
         cg.add(var.set_news_sensor(ts))
+
+    if CONF_PODCAST in config:
+        ts = yield cg.get_variable(config[CONF_PODCAST])
+        cg.add(var.set_podcast_sensor(ts))
 
     if CONF_TIME in config:
         t = yield cg.get_variable(config[CONF_TIME])

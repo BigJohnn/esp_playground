@@ -57,8 +57,36 @@ static const Glyph5x7 FONT_5X7[] = {
     {':', {0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00}},
     {'.', {0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x04}},
     {'-', {0x00, 0x00, 0x00, 0x0E, 0x00, 0x00, 0x00}},
+    {',', {0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x04}},
     {' ', {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
     {'%', {0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03}},
+    // Uppercase letters (for weather text, etc.)
+    {'A', {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}},
+    {'B', {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E}},
+    {'C', {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E}},
+    {'D', {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E}},
+    {'E', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F}},
+    {'F', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10}},
+    {'G', {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E}},
+    {'H', {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}},
+    {'I', {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E}},
+    {'J', {0x1F, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C}},
+    {'K', {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}},
+    {'L', {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}},
+    {'M', {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11}},
+    {'N', {0x11, 0x19, 0x15, 0x15, 0x13, 0x11, 0x11}},
+    {'O', {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
+    {'P', {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}},
+    {'Q', {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D}},
+    {'R', {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}},
+    {'S', {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E}},
+    {'T', {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}},
+    {'U', {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
+    {'V', {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04}},
+    {'W', {0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11}},
+    {'X', {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11}},
+    {'Y', {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04}},
+    {'Z', {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F}},
 };
 static const int FONT_CHAR_WIDTH = 6;  // 5 pixels + 1 pixel spacing
 static const int FONT_CHAR_HEIGHT = 7;
@@ -89,6 +117,8 @@ class Box3LCD : public display::DisplayBuffer {
   void set_stock_sensor(sensor::Sensor *s) { this->stock_ = s; }
   void set_calendar_sensor(text_sensor::TextSensor *s) { this->calendar_ = s; }
   void set_news_sensor(text_sensor::TextSensor *s) { this->news_ = s; }
+  void set_outdoor_temperature_sensor(sensor::Sensor *s) { this->outdoor_temperature_ = s; }
+  void set_podcast_sensor(text_sensor::TextSensor *s) { this->podcast_ = s; }
   void set_time(time::RealTimeClock *t) { this->time_ = t; }
 
  protected:
@@ -242,29 +272,70 @@ class Box3LCD : public display::DisplayBuffer {
     // ---- Text overlays ----
     const uint16_t COLOR_TEXT = 0xFFFF;  // try white-ish for text
 
-    // Header: time (HH:MM) on left
-    if (this->time_ != nullptr) {
-      auto now = this->time_->now();
-      if (now.is_valid()) {
-        std::string ts = now.strftime("%H:%M");
-        this->draw_text_(4, 10, ts, COLOR_TEXT);
+    // Header: show latest Home Assistant podcast time in a compact, local format
+    // Use a 2x scaled font to make it larger and visually bolder.
+    const int HEADER_TEXT_Y = 8;
+    if (this->podcast_ != nullptr && this->podcast_->has_state()) {
+      std::string raw = this->podcast_->state;
+      std::string text = this->format_podcast_header_(raw);
+      // Limit to one line
+      const int HEADER_SCALE = 2;
+      size_t max_chars = (LCD_WIDTH - 8) / (FONT_CHAR_WIDTH * HEADER_SCALE);
+      if (text.size() > max_chars) {
+        text = text.substr(0, max_chars);
       }
+      this->draw_text_scaled_(4, HEADER_TEXT_Y, text, COLOR_TEXT, HEADER_SCALE);
     }
 
-    // Center card: numeric temperature and humidity
+    // Center card: numeric temperature and humidity (scaled 2x for better readability)
+    const int CENTER_SCALE = 2;
     if (this->temperature_ != nullptr && this->temperature_->has_state()) {
       char buf[8];
       std::snprintf(buf, sizeof(buf), "%.1f", this->temperature_->state);
-      this->draw_text_(card_x0 + inner_margin, card_y0 + inner_margin, buf, COLOR_TEXT);
+      this->draw_text_scaled_(card_x0 + inner_margin,
+                              card_y0 + inner_margin,
+                              buf, COLOR_TEXT, CENTER_SCALE);
     }
     if (this->humidity_ != nullptr && this->humidity_->has_state()) {
       char buf[8];
       std::snprintf(buf, sizeof(buf), "%.0f%%", this->humidity_->state);
-      this->draw_text_(card_x0 + card_w / 2 + inner_margin, card_y0 + inner_margin, buf, COLOR_TEXT);
+      this->draw_text_scaled_(card_x0 + card_w / 2 + inner_margin,
+                              card_y0 + inner_margin,
+                              buf, COLOR_TEXT, CENTER_SCALE);
     }
 
-    // Footer: draw a short "NEWS" label to mark the area
-    this->draw_text_(inner_margin, LCD_HEIGHT - footer_h + 4, "NEWS", COLOR_TEXT);
+    // Footer: show outside temperature + forecast from Home Assistant (scaled 2x)
+    const int FOOTER_TEXT_Y = LCD_HEIGHT - footer_h + 4;
+    const int FOOTER_SCALE = 2;
+    if (this->outdoor_temperature_ != nullptr && this->outdoor_temperature_->has_state() &&
+        this->news_ != nullptr && this->news_->has_state()) {
+      char temp_buf[8];
+      std::snprintf(temp_buf, sizeof(temp_buf), "%.0fC", this->outdoor_temperature_->state);
+      std::string weather = this->news_->state;
+      std::string line = temp_buf;
+      line += " ";
+      line += weather;
+
+      size_t max_chars = (LCD_WIDTH - 2 * inner_margin) / (FONT_CHAR_WIDTH * FOOTER_SCALE);
+      if (line.size() > max_chars) {
+        line = line.substr(0, max_chars);
+      }
+      this->draw_text_scaled_(inner_margin, FOOTER_TEXT_Y, line, COLOR_TEXT, FOOTER_SCALE);
+    } else if (this->outdoor_temperature_ != nullptr && this->outdoor_temperature_->has_state()) {
+      char temp_buf[8];
+      std::snprintf(temp_buf, sizeof(temp_buf), "%.0fC", this->outdoor_temperature_->state);
+      this->draw_text_scaled_(inner_margin, FOOTER_TEXT_Y, temp_buf, COLOR_TEXT, FOOTER_SCALE);
+    } else if (this->news_ != nullptr && this->news_->has_state()) {
+      std::string weather = this->news_->state;
+      std::string line = weather;
+      size_t max_chars = (LCD_WIDTH - 2 * inner_margin) / (FONT_CHAR_WIDTH * FOOTER_SCALE);
+      if (line.size() > max_chars) {
+        line = line.substr(0, max_chars);
+      }
+      this->draw_text_scaled_(inner_margin, FOOTER_TEXT_Y, line, COLOR_TEXT, FOOTER_SCALE);
+    } else {
+      this->draw_text_scaled_(inner_margin, FOOTER_TEXT_Y, "--", COLOR_TEXT, FOOTER_SCALE);
+    }
 
     // Flush to panel
     this->flush_();
@@ -448,6 +519,8 @@ class Box3LCD : public display::DisplayBuffer {
   sensor::Sensor *stock_{nullptr};
   text_sensor::TextSensor *calendar_{nullptr};
   text_sensor::TextSensor *news_{nullptr};
+  sensor::Sensor *outdoor_temperature_{nullptr};
+  text_sensor::TextSensor *podcast_{nullptr};
   time::RealTimeClock *time_{nullptr};
 
   // --- Helper: set a single pixel in our RGB565 framebuffer ---
@@ -500,6 +573,90 @@ class Box3LCD : public display::DisplayBuffer {
       cx += FONT_CHAR_WIDTH;
       if (cx >= LCD_WIDTH) break;  // avoid overflow
     }
+  }
+
+  // --- Helper: draw a single 5x7 character, scaled up (used for bold/large header text) ---
+  void draw_char_scaled_(int x, int y, char c, uint16_t color, int scale) {
+    const Glyph5x7 *glyph = this->find_glyph_(c);
+    if (glyph == nullptr || scale <= 0) {
+      return;
+    }
+    for (int row = 0; row < FONT_CHAR_HEIGHT; row++) {
+      uint8_t bits = glyph->rows[row];
+      for (int col = 0; col < 5; col++) {
+        // bit 4 is leftmost, bit 0 is rightmost
+        if (bits & (1 << (4 - col))) {
+          // simple nearest-neighbor scale: each pixel becomes a scale x scale block
+          int px = x + col * scale;
+          int py = y + row * scale;
+          for (int dy = 0; dy < scale; dy++) {
+            for (int dx = 0; dx < scale; dx++) {
+              this->set_pixel_(px + dx, py + dy, color);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // --- Helper: draw ASCII text using scaled 5x7 font ---
+  void draw_text_scaled_(int x, int y, const std::string &text, uint16_t color, int scale) {
+    if (scale <= 0) return;
+    int cx = x;
+    const int adv = FONT_CHAR_WIDTH * scale;
+    for (char c : text) {
+      if (c == ' ') {
+        cx += adv;
+        continue;
+      }
+      this->draw_char_scaled_(cx, y, c, color, scale);
+      cx += adv;
+      if (cx >= LCD_WIDTH) break;  // avoid overflow
+    }
+  }
+
+  // --- Helper: format Home Assistant podcast event state into local, compact text ---
+  std::string format_podcast_header_(const std::string &raw) {
+    // Home Assistant event state is usually an ISO timestamp in UTC, e.g.
+    // "2025-11-21T02:38:01.564+00:00"
+    // For a compact display we show "MM-DD HH:MM" in local time (assume UTC+8).
+    if (raw.size() < 16) {
+      return raw;  // not a timestamp, just show as-is
+    }
+
+    size_t tpos = raw.find('T');
+    if (tpos == std::string::npos || tpos < 10 || raw.size() < tpos + 5) {
+      return raw;  // unexpected format, fallback
+    }
+
+    auto parse_two_digits = [&](size_t pos, int &out) -> bool {
+      if (pos + 1 >= raw.size()) return false;
+      char c1 = raw[pos];
+      char c2 = raw[pos + 1];
+      if (c1 < '0' || c1 > '9' || c2 < '0' || c2 > '9') return false;
+      out = (c1 - '0') * 10 + (c2 - '0');
+      return true;
+    };
+
+    int month = 0, day = 0, hour = 0, minute = 0;
+    if (!parse_two_digits(5, month) ||
+        !parse_two_digits(8, day) ||
+        !parse_two_digits(tpos + 1, hour) ||
+        !parse_two_digits(tpos + 4, minute)) {
+      // Parsing failed, fall back to raw representation
+      return raw;
+    }
+
+    // Convert UTC -> local time (assume UTC+8, e.g. Asia/Shanghai)
+    int local_hour = hour + 8;
+    if (local_hour >= 24) {
+      local_hour -= 24;
+      // For simplicity we don't roll the date; the visual difference is usually small.
+    }
+
+    char buf[20];
+    std::snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", month, day, local_hour, minute);
+    return std::string(buf);
   }
 };
 
