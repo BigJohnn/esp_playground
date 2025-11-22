@@ -9,18 +9,16 @@ services:
       - ../config:/config
       - /run/dbus:/run/dbus:ro
     environment:
-      # - http_proxy=
-      # - https_proxy=
-      # - all_proxy=
-      - http_proxy=http://127.0.0.1:7897
-      - https_proxy=http://127.0.0.1:7897
-      - all_proxy=socks5://127.0.0.1:7897
+      - http_proxy=
+      - https_proxy=
+      - all_proxy=
+      # - http_proxy=http://127.0.0.1:7897
+      # - https_proxy=http://127.0.0.1:7897
+      # - all_proxy=socks5://127.0.0.1:7897
       - TZ=Asia/Shanghai
+      - SHELL=/bin/bash
     restart: unless-stopped
     privileged: true
-    # user: user
     network_mode: host
     stdin_open: true
     tty: true
-    
-    # command: ["tail", "-f", "/dev/null"]

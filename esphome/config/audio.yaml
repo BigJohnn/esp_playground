@@ -1,0 +1,146 @@
+esphome:
+  name: korvo_audio
+  friendly_name: Korvo Audio
+  name_add_mac_suffix: true
+  comment: "ESP32-S3-Korvo-1 语音节点，将音频流送入 Home Assistant 管道"
+
+external_components:
+  - source:
+      type: local
+      path: custom_components
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      # 语音处理依赖更大的缓存与 PSRAM
+      CONFIG_ESP32S3_DATA_CACHE_64KB: y
+      CONFIG_ESP32S3_SPIRAM_SUPPORT: y
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  level: INFO
+
+# Home Assistant API/OTA
+api:
+  password: !secret api_password
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  ap:
+    ssid: "Korvo Audio Fallback"
+    password: "korvoAudio"
+
+captive_portal:
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+korvo_audio:
+  sda: 1
+  scl: 2
+  pa_pin: 38
+  speaker_sample_rate: 22050
+  speaker_volume: 85
+  mic_sample_rate: 16000
+  mic_mclk_ratio: 256
+  mic_gain: 30DB
+  mic_bias: 2V87
+  mic_tdm: true
+
+# 两路 I2S：I2S0 -> ES8311 扬声器, I2S1 -> ES7210 麦阵列（依据 esp-bsp/bsp/esp32_s3_korvo_1/include/bsp/esp32_s3_korvo_1.h）
+i2s_audio:
+  - id: korvo_speaker_bus
+    i2s_num: 0
+    mclk_pin: GPIO42
+    bclk_pin: GPIO40
+    lrclk_pin: GPIO41
+    data_out_pin: GPIO39
+  - id: korvo_mic_bus
+    i2s_num: 1
+    mclk_pin: GPIO20
+    bclk_pin: GPIO10
+    lrclk_pin: GPIO9
+    data_in_pin: GPIO11
+
+microphone:
+  - platform: i2s_audio
+    id: korvo_mic
+    i2s_audio_id: korvo_mic_bus
+    channel: left
+    sample_rate: 16000
+    bits_per_sample: 32
+    pdm: false
+    adc_type: external
+
+speaker:
+  - platform: i2s_audio
+    id: korvo_speaker
+    i2s_audio_id: korvo_speaker_bus
+    dac_type: external
+    mode: mono
+    bits_per_sample: 16
+    sample_rate: 22050
+
+# 可以从 HA 面板触发 Push-to-talk
+button:
+  - platform: template
+    name: "Korvo 语音录入"
+    id: korvo_ptt
+    on_press:
+      - voice_assistant.start:
+          id: korvo_assistant
+
+voice_assistant:
+  id: korvo_assistant
+  microphone: korvo_mic
+  speaker: korvo_speaker
+  auto_gain: 31dB          # Korvo 阵列默认增益
+  noise_suppression_level: 2
+  vad_threshold: 3
+  use_wake_word: false     # 先用手动 PTT，后续可换唤醒词
+  on_start:
+    - logger.log: "开始录音并推送到 Home Assistant 管道"
+  on_listening:
+    - logger.log: "流式语音 -> STT"
+  on_stt_end:
+    - logger.log: "Home Assistant STT 返回结果"
+  on_error:
+    - homeassistant.event:
+        event: korvo_voice_error
+        data:
+          code: !lambda 'return (int)error;'
+          message: !lambda 'return message;'
+    - logger.log:
+        level: ERROR
+        format: "Voice assistant error: %s"
+        args:
+          - message.c_str()
+  on_transcript:
+    - homeassistant.event:
+        event: korvo_voice_transcript
+        data:
+          text: !lambda 'return x;'
+          pipeline: !lambda 'return pipeline;'
+          timestamp: !lambda 'return id(ha_time).now().timestamp;'
+    - homeassistant.service:
+        service: logbook.log
+        data:
+          name: Korvo Voice
+          message: !lambda 'return x;'
+          entity_id: sensor.korvo_voice_transcript
+  on_end:
+    - logger.log: "录音完成"

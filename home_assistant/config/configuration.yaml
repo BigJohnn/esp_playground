@@ -25,3 +25,14 @@ template:
       - name: "News Headline"
         unique_id: news_headline
         state: "{{ trigger.event.data.title }}"
+  - trigger:
+      - platform: event
+        event_type: korvo_voice_transcript
+    sensor:
+      - name: "Korvo Voice Transcript"
+        unique_id: korvo_voice_transcript
+        icon: mdi:microphone-message
+        state: "{{ trigger.event.data.text | default('') }}"
+        attributes:
+          pipeline: "{{ trigger.event.data.pipeline | default('default') }}"
+          reported_at: "{{ now() }}"
