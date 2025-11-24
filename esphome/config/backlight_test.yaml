@@ -1,0 +1,37 @@
+esphome:
+  name: box3_backlight_test
+
+esp32:
+  board: esp32s3box
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+# 仅测试背光：GPIO47 上的 LEDC PWM
+output:
+  - platform: ledc
+    id: lcd_backlight
+    pin: GPIO47
+    frequency: 5000 Hz
+
+globals:
+  - id: backlight_index
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+interval:
+  - interval: 2s
+    then:
+      - lambda: |-
+          // 循环测试 5 个占空比：0.0, 0.25, 0.5, 0.75, 1.0
+          const float levels[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+          const int n = sizeof(levels) / sizeof(levels[0]);
+          int idx = id(backlight_index) % n;
+          float level = levels[idx];
+          id(lcd_backlight).set_level(level);
+          ESP_LOGD("backlight_test", "index=%d level=%.2f", idx, level);
+          id(backlight_index) = (idx + 1) % n;
+

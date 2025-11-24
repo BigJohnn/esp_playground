@@ -3,10 +3,14 @@ esphome:
   on_boot:
     priority: 800
     then:
-      - output.turn_on: lcd_ctrl
+      - output.set_level:
+          id: lcd_backlight
+          level: 100%
       - lambda: |-
           id(canvas_index) = 0;
           id(my_display).set_canvas(id(canvas_index));
+          id(backlight_level) = 0.4f;
+      - script.execute: set_backlight_level
 
 external_components:
   - source:
@@ -57,6 +61,34 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
+  - id: backlight_level
+    type: float
+    restore_value: no
+    initial_value: '0.4'
+  - id: swipe_start_y
+    type: int
+    restore_value: no
+    initial_value: '-1'
+  - id: swipe_min_y
+    type: int
+    restore_value: no
+    initial_value: '-1'   # 复用为 last_y 记录最新 y
+  - id: swipe_base_level
+    type: float
+    restore_value: no
+    initial_value: '-1'
+
+script:
+  - id: set_backlight_level
+    mode: restart
+    then:
+      - lambda: |-
+          float level = id(backlight_level);
+          if (level < 0.0f) level = 0.0f;
+          if (level > 1.0f) level = 1.0f;
+          id(backlight_level) = level;
+          id(lcd_backlight).set_level(level);
+          ESP_LOGI("backlight", "Set brightness level=%.3f", level);
 
 i2c:
   - id: i2c_sensors
@@ -142,16 +174,40 @@ touchscreen:
     address: 0x5D
     interrupt_pin: GPIO3       # BSP_LCD_TOUCH_INT
     # reset_pin 可选，GT911 与 LCD 共用复位逻辑，由板级电路处理
-    on_touch:
+    on_update:
       - lambda: |-
+          using namespace esphome::touchscreen;
+          const float kPixelsPerUnit = 80.0f;   // 调高灵敏度：约 80px 到全亮
+          ESP_LOGD("gt911", "on_update: touches=%u", (unsigned) touches.size());
           for (auto &t : touches) {
-            ESP_LOGD("gt911", "Touch: x=%d, y=%d, state=%d", t.x, t.y, (int)t.state);
+            ESP_LOGD("gt911", "Touch: id=%d x=%d, y=%d, state=%d", t.id, t.x, t.y, (int)t.state);
+            const bool active = (t.state == STATE_PRESSED) || (t.state == STATE_UPDATED);
+            if (active) {
+              if (id(swipe_start_y) < 0) {
+                id(swipe_start_y) = t.y;  // 起点
+                id(swipe_base_level) = id(backlight_level);
+                id(swipe_min_y) = t.y;  // 作为 last_y 复用
+              }
+              id(swipe_min_y) = t.y;  // 记录最新位置
+              float delta = static_cast<float>(t.y - id(swipe_start_y));  // 上滑为正，下滑为负
+              float target = id(swipe_base_level) + delta / kPixelsPerUnit;
+              if (target > 1.0f) target = 1.0f;
+              if (target < 0.0f) target = 0.0f;
+              id(backlight_level) = target;
+              id(set_backlight_level).execute();
+              ESP_LOGI("backlight", "Swipe (live) -> level=%.3f", id(backlight_level));
+            } else {  // state 0 (released) or >=4 (releasing/calibrate)
+              id(swipe_start_y) = -1;
+              id(swipe_min_y) = -1;
+              id(swipe_base_level) = -1;
+            }
           }
 
 output:
-  - platform: gpio
-    id: lcd_ctrl
+  - platform: ledc
+    id: lcd_backlight
     pin: GPIO47
+    frequency: 5000 Hz
     inverted: true
 
 display:
@@ -165,86 +221,6 @@ display:
     news: news_headline
     outdoor_temperature: outside_temperature
     time_id: ha_time
-
-# it.fill(COLOR_BLUE);
-# it.fill(COLOR_BLACK);
-# // 先继续用测试画面，确认能稳定写屏
-# it.printf(160, 120, id(font_large), COLOR_WHITE,
-#           TextAlign::CENTER, "TEST");
-# 显示配置
-# display:
-#   - platform: ili9xxx
-#     model: S3BOX
-#     invert_colors: true
-#     cs_pin: GPIO2          # LCD_CS
-#     dc_pin: GPIO0          # LCD_DC
-#     id: my_display
-#     update_interval: 5s
-#     lambda: |-
-#       // 背景
-#       it.fill(COLOR_BLACK);
-
-#       // 标题栏 - 时间
-#       it.strftime(10, 10, id(font_large), COLOR_WHITE,
-#                   TextAlign::TOP_LEFT, "%H:%M", id(ha_time).now());
-#       it.strftime(10, 50, id(font_small), COLOR_GRAY,
-#                   TextAlign::TOP_LEFT, "%Y-%m-%d %A", id(ha_time).now());
-
-#       // 分隔线
-#       it.line(0, 80, 320, 80, COLOR_GRAY);
-
-#       // 在家状态 + 温湿度（来自底座 AHT20 + 雷达）
-#       it.printf(10, 90, id(font_medium), COLOR_CYAN, "在家:");
-#       if (id(radar_presence).has_state()) {
-#         it.printf(80, 90, id(font_medium), COLOR_WHITE,
-#                   "%s", id(radar_presence).state ? "有人" : "无人");
-#       }
-
-#       it.printf(10, 120, id(font_medium), COLOR_ORANGE, "温度:");
-#       if (!isnan(id(temperature).state)) {
-#         it.printf(80, 120, id(font_medium), COLOR_WHITE,
-#                   "%.1f°C", id(temperature).state);
-#       }
-
-#       it.printf(180, 120, id(font_medium), COLOR_BLUE, "湿度:");
-#       if (!isnan(id(humidity).state)) {
-#         it.printf(240, 120, id(font_medium), COLOR_WHITE,
-#                   "%.0f%%", id(humidity).state);
-#       }
-
-#       // 分隔线
-#       it.line(0, 150, 320, 150, COLOR_GRAY);
-
-#       // 日历事项
-#       it.printf(10, 160, id(font_medium), COLOR_GREEN, "今日事项:");
-#       if (id(calendar_event).has_state()) {
-#         it.printf(10, 185, id(font_small), COLOR_WHITE,
-#                   "%s", id(calendar_event).state.c_str());
-#       }
-
-#       // 股票信息
-#       it.printf(10, 215, id(font_medium), COLOR_YELLOW, "股票:");
-#       if (id(stock_price).has_state()) {
-#         it.printf(80, 215, id(font_medium), COLOR_WHITE,
-#                   "$%.2f", id(stock_price).state);
-#       }
-
-# 字体配置（请确保对应 TTF 文件存在）
-# font:
-#   - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
-#     id: font_small
-#     size: 14
-#     glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
-
-#   - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
-#     id: font_medium
-#     size: 20
-#     glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
-
-#   - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
-#     id: font_large
-#     size: 36
-#     glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
 
 # 颜色定义
 color:
