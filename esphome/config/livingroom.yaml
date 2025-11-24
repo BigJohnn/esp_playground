@@ -4,6 +4,9 @@ esphome:
     priority: 800
     then:
       - output.turn_on: lcd_ctrl
+      - lambda: |-
+          id(canvas_index) = 0;
+          id(my_display).set_canvas(id(canvas_index));
 
 external_components:
   - source:
@@ -17,6 +20,14 @@ esp32:
 
 # Enable logging
 logger:
+  level: DEBUG
+  logs:
+    esp-idf: WARN       # 屏蔽 ESP-IDF 的啰嗦 I2C NACK
+    main: DEBUG         # 你的 lambda/ESP_LOGD("canvas", ...) 属于 main
+    binary_sensor: DEBUG
+    touchscreen: DEBUG
+    component: DEBUG
+    gt911: DEBUG
 
 # Enable Home Assistant API
 api:
@@ -40,6 +51,12 @@ captive_portal:
 time:
   - platform: homeassistant
     id: ha_time
+
+globals:
+  - id: canvas_index
+    type: int
+    restore_value: no
+    initial_value: '0'
 
 i2c:
   - id: i2c_sensors
@@ -98,7 +115,10 @@ binary_sensor:
     name: "Box3 Home Key"
     index: 0
     on_press:
-      - logger.log: "Home key PRESSED"
+      - lambda: |-
+          id(canvas_index) = (id(canvas_index) + 1) % 3;
+          id(my_display).set_canvas(id(canvas_index));
+          ESP_LOGD("canvas", "Home pressed, switched to canvas %d", id(canvas_index));
     on_release:
       - logger.log: "Home key RELEASED"
 
