@@ -139,6 +139,7 @@ touchscreen:
   - platform: gt911
     id: box3_touch
     i2c_id: i2c_touch
+    address: 0x5D
     interrupt_pin: GPIO3       # BSP_LCD_TOUCH_INT
     # reset_pin 可选，GT911 与 LCD 共用复位逻辑，由板级电路处理
     on_touch:
