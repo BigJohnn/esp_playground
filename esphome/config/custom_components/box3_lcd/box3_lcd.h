@@ -145,11 +145,12 @@ class Box3LCD : public display::DisplayBuffer {
 
     // --- Canvas switching ---
     // canvas_ == 0 : regular dashboard
-    // canvas_ == 1 : solid fill canvas (green)
+    // canvas_ == 1 : kawaii emoji animation
     // canvas_ == 2 : solid fill canvas (blue)
     if (this->canvas_ == 1) {
-      std::fill(buffer_.begin(), buffer_.end(), COLOR_CARD);  // green-ish canvas
+      this->draw_emoji_canvas_();
       this->flush_();
+      this->emoji_tick_++;
       return;
     }
     if (this->canvas_ == 2) {
@@ -555,6 +556,7 @@ class Box3LCD : public display::DisplayBuffer {
   text_sensor::TextSensor *podcast_{nullptr};
   time::RealTimeClock *time_{nullptr};
   uint8_t canvas_{0};
+  uint32_t emoji_tick_{0};
 
   // --- Helper: set a single pixel in our RGB565 framebuffer ---
   inline void set_pixel_(int x, int y, uint16_t color) {
@@ -711,6 +713,124 @@ class Box3LCD : public display::DisplayBuffer {
 
     // Base rectangle
     this->draw_filled_rect_(x0 + 6, y0 + 10, 28, 10, COLOR_CLOUD);
+  }
+
+  // --- Canvas 1: kawaii emoji animation ---
+  void draw_emoji_canvas_() {
+    // soft candy gradient background
+    for (int y = 0; y < LCD_HEIGHT; y++) {
+      uint16_t row_color = this->mix_color_(0x7FEF /*mint*/, 0xF81F /*pink*/, y, LCD_HEIGHT);
+      uint16_t *row = &buffer_[y * LCD_WIDTH];
+      std::fill(row, row + LCD_WIDTH, row_color);
+    }
+
+    int frame = (this->emoji_tick_ / 6) % 4;       // cycle through expressions
+    int bob = static_cast<int>((this->emoji_tick_ % 20) - 10);  // small wobble
+
+    const int cx = LCD_WIDTH / 2;
+    const int cy = LCD_HEIGHT / 2 + bob;
+    const int R_HEAD = 70;
+    const uint16_t COLOR_HEAD = 0xFFE0;   // warm yellow
+    const uint16_t COLOR_STROKE = 0x0000; // black outlines
+    const uint16_t COLOR_BLUSH = 0xF9B2;  // soft pink cheeks
+
+    // face base + outline
+    this->draw_filled_circle_(cx, cy, R_HEAD, COLOR_HEAD);
+    this->draw_circle_outline_(cx, cy, R_HEAD, COLOR_STROKE);
+
+    // cheeks
+    this->draw_filled_rect_(cx - 40, cy + 10, 16, 8, COLOR_BLUSH);
+    this->draw_filled_rect_(cx + 24, cy + 10, 16, 8, COLOR_BLUSH);
+
+    // expressions
+    switch (frame) {
+      case 0:  // big smile
+        this->draw_eyes_round_(cx, cy, false, false);
+        this->draw_mouth_smile_(cx, cy + 30, 32, 10, COLOR_STROKE);
+        break;
+      case 1:  // laugh
+        this->draw_eyes_round_(cx, cy, false, false);
+        this->draw_mouth_open_(cx, cy + 32, 36, 18, COLOR_STROKE);
+        break;
+      case 2:  // wink + tongue
+        this->draw_eyes_round_(cx, cy, true, false);
+        this->draw_mouth_tongue_(cx, cy + 30, 32, 12, COLOR_STROKE);
+        break;
+      case 3:  // surprised
+      default:
+        this->draw_eyes_round_(cx, cy, false, true);
+        this->draw_mouth_o_(cx, cy + 28, 12, COLOR_STROKE);
+        break;
+    }
+  }
+
+  // --- Emoji helpers ---
+  void draw_circle_outline_(int cx, int cy, int r, uint16_t color) {
+    if (r <= 0) return;
+    int rr = r * r;
+    for (int dy = -r; dy <= r; dy++) {
+      int yy = dy * dy;
+      for (int dx = -r; dx <= r; dx++) {
+        int xx = dx * dx;
+        int dist = xx + yy;
+        if (dist >= rr - r && dist <= rr + r) {
+          this->set_pixel_(cx + dx, cy + dy, color);
+        }
+      }
+    }
+  }
+
+  void draw_eyes_round_(int cx, int cy, bool wink_left, bool surprised) {
+    const uint16_t COLOR_EYE = 0x0000;
+    const int eye_offset_x = 28;
+    const int eye_y = cy - 10;
+    const int eye_r = surprised ? 10 : 8;
+
+    // Left eye
+    if (wink_left) {
+      this->draw_filled_rect_(cx - eye_offset_x - 8, eye_y, 16, 3, COLOR_EYE);
+    } else {
+      this->draw_filled_circle_(cx - eye_offset_x, eye_y, eye_r, COLOR_EYE);
+    }
+    // Right eye
+    this->draw_filled_circle_(cx + eye_offset_x, eye_y, eye_r, COLOR_EYE);
+  }
+
+  void draw_mouth_smile_(int cx, int y, int w, int h, uint16_t color) {
+    this->draw_filled_rect_(cx - w / 2, y, w, h, color);
+    this->draw_filled_circle_(cx - w / 2, y + h, h / 2, color);
+    this->draw_filled_circle_(cx + w / 2, y + h, h / 2, color);
+  }
+
+  void draw_mouth_open_(int cx, int y, int w, int h, uint16_t color) {
+    this->draw_filled_rect_(cx - w / 2, y, w, h, color);
+    const uint16_t COLOR_TONGUE = 0xF9B2;
+    this->draw_filled_rect_(cx - w / 2 + 6, y + h / 2, w - 12, h / 2, COLOR_TONGUE);
+  }
+
+  void draw_mouth_tongue_(int cx, int y, int w, int h, uint16_t color) {
+    this->draw_filled_rect_(cx - w / 2, y, w, h, color);
+    const uint16_t COLOR_TONGUE = 0xF9B2;
+    this->draw_filled_rect_(cx - w / 4, y + h / 2, w / 2, h, COLOR_TONGUE);
+  }
+
+  void draw_mouth_o_(int cx, int y, int r, uint16_t color) {
+    this->draw_circle_outline_(cx, y, r, color);
+    this->draw_filled_circle_(cx, y, r / 2, color);
+  }
+
+  uint16_t mix_color_(uint16_t c1, uint16_t c2, int y, int h) {
+    if (h <= 1) return c1;
+    float t = static_cast<float>(y) / static_cast<float>(h - 1);
+    auto lerp = [](uint8_t a, uint8_t b, float tval) -> uint8_t {
+      return static_cast<uint8_t>(a + (b - a) * tval);
+    };
+    uint8_t r1 = (c1 >> 11) & 0x1F, g1 = (c1 >> 5) & 0x3F, b1 = c1 & 0x1F;
+    uint8_t r2 = (c2 >> 11) & 0x1F, g2 = (c2 >> 5) & 0x3F, b2 = c2 & 0x1F;
+    uint8_t r = lerp(r1, r2, t);
+    uint8_t g = lerp(g1, g2, t);
+    uint8_t b = lerp(b1, b2, t);
+    return static_cast<uint16_t>((r << 11) | (g << 5) | b);
   }
 
   // --- Helper: draw a weather icon based on Home Assistant weather text ---
