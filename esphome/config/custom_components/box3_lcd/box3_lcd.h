@@ -146,7 +146,7 @@ class Box3LCD : public display::DisplayBuffer {
     // --- Canvas switching ---
     // canvas_ == 0 : regular dashboard
     // canvas_ == 1 : kawaii emoji animation
-    // canvas_ == 2 : solid fill canvas (blue)
+    // canvas_ == 2 : watering demo (cute plant + water animation)
     if (this->canvas_ == 1) {
       this->draw_emoji_canvas_();
       this->flush_();
@@ -154,8 +154,9 @@ class Box3LCD : public display::DisplayBuffer {
       return;
     }
     if (this->canvas_ == 2) {
-      std::fill(buffer_.begin(), buffer_.end(), COLOR_FOOT);  // blue canvas
+      this->draw_watering_canvas_();
       this->flush_();
+      this->watering_tick_++;
       return;
     }
 
@@ -557,6 +558,7 @@ class Box3LCD : public display::DisplayBuffer {
   time::RealTimeClock *time_{nullptr};
   uint8_t canvas_{0};
   uint32_t emoji_tick_{0};
+  uint32_t watering_tick_{0};
 
   // --- Helper: set a single pixel in our RGB565 framebuffer ---
   inline void set_pixel_(int x, int y, uint16_t color) {
@@ -715,56 +717,21 @@ class Box3LCD : public display::DisplayBuffer {
     this->draw_filled_rect_(x0 + 6, y0 + 10, 28, 10, COLOR_CLOUD);
   }
 
-  // --- Canvas 1: kawaii emoji animation ---
-  void draw_emoji_canvas_() {
-    // soft candy gradient background
-    for (int y = 0; y < LCD_HEIGHT; y++) {
-      uint16_t row_color = this->mix_color_(0x7FEF /*mint*/, 0xF81F /*pink*/, y, LCD_HEIGHT);
-      uint16_t *row = &buffer_[y * LCD_WIDTH];
-      std::fill(row, row + LCD_WIDTH, row_color);
-    }
-
-    int frame = (this->emoji_tick_ / 6) % 4;       // cycle through expressions
-    int bob = static_cast<int>((this->emoji_tick_ % 20) - 10);  // small wobble
-
-    const int cx = LCD_WIDTH / 2;
-    const int cy = LCD_HEIGHT / 2 + bob;
-    const int R_HEAD = 70;
-    const uint16_t COLOR_HEAD = 0xFFE0;   // warm yellow
-    const uint16_t COLOR_STROKE = 0x0000; // black outlines
-    const uint16_t COLOR_BLUSH = 0xF9B2;  // soft pink cheeks
-
-    // face base + outline
-    this->draw_filled_circle_(cx, cy, R_HEAD, COLOR_HEAD);
-    this->draw_circle_outline_(cx, cy, R_HEAD, COLOR_STROKE);
-
-    // cheeks
-    this->draw_filled_rect_(cx - 40, cy + 10, 16, 8, COLOR_BLUSH);
-    this->draw_filled_rect_(cx + 24, cy + 10, 16, 8, COLOR_BLUSH);
-
-    // expressions
-    switch (frame) {
-      case 0:  // big smile
-        this->draw_eyes_round_(cx, cy, false, false);
-        this->draw_mouth_smile_(cx, cy + 30, 32, 10, COLOR_STROKE);
-        break;
-      case 1:  // laugh
-        this->draw_eyes_round_(cx, cy, false, false);
-        this->draw_mouth_open_(cx, cy + 32, 36, 18, COLOR_STROKE);
-        break;
-      case 2:  // wink + tongue
-        this->draw_eyes_round_(cx, cy, true, false);
-        this->draw_mouth_tongue_(cx, cy + 30, 32, 12, COLOR_STROKE);
-        break;
-      case 3:  // surprised
-      default:
-        this->draw_eyes_round_(cx, cy, false, true);
-        this->draw_mouth_o_(cx, cy + 28, 12, COLOR_STROKE);
-        break;
-    }
+  // --- Helpers shared by emoji & watering canvases ---
+  uint16_t mix_color_(uint16_t c1, uint16_t c2, int y, int h) {
+    if (h <= 1) return c1;
+    float t = static_cast<float>(y) / static_cast<float>(h - 1);
+    auto lerp = [](uint8_t a, uint8_t b, float tv) -> uint8_t {
+      return static_cast<uint8_t>(a + (b - a) * tv);
+    };
+    uint8_t r1 = (c1 >> 11) & 0x1F, g1 = (c1 >> 5) & 0x3F, b1 = c1 & 0x1F;
+    uint8_t r2 = (c2 >> 11) & 0x1F, g2 = (c2 >> 5) & 0x3F, b2 = c2 & 0x1F;
+    uint8_t r = lerp(r1, r2, t);
+    uint8_t g = lerp(g1, g2, t);
+    uint8_t b = lerp(b1, b2, t);
+    return static_cast<uint16_t>((r << 11) | (g << 5) | b);
   }
 
-  // --- Emoji helpers ---
   void draw_circle_outline_(int cx, int cy, int r, uint16_t color) {
     if (r <= 0) return;
     int rr = r * r;
@@ -780,20 +747,27 @@ class Box3LCD : public display::DisplayBuffer {
     }
   }
 
-  void draw_eyes_round_(int cx, int cy, bool wink_left, bool surprised) {
+  void draw_eyes_round_(int cx, int cy, bool wink_left, bool surprised,
+                        int eye_offset_x, int eye_y_offset,
+                        int eye_r_surprised, int eye_r_normal) {
     const uint16_t COLOR_EYE = 0x0000;
-    const int eye_offset_x = 28;
-    const int eye_y = cy - 10;
-    const int eye_r = surprised ? 10 : 8;
+    const int eye_y = cy - eye_y_offset;
+    const int eye_r = surprised ? eye_r_surprised : eye_r_normal;
 
-    // Left eye
     if (wink_left) {
       this->draw_filled_rect_(cx - eye_offset_x - 8, eye_y, 16, 3, COLOR_EYE);
     } else {
       this->draw_filled_circle_(cx - eye_offset_x, eye_y, eye_r, COLOR_EYE);
     }
-    // Right eye
     this->draw_filled_circle_(cx + eye_offset_x, eye_y, eye_r, COLOR_EYE);
+  }
+
+  void draw_emoji_eyes_(int cx, int cy, bool wink_left, bool surprised) {
+    this->draw_eyes_round_(cx, cy, wink_left, surprised, 28, 10, 10, 8);
+  }
+
+  void draw_flower_eyes_(int cx, int cy, bool wink_left, bool surprised) {
+    this->draw_eyes_round_(cx, cy, wink_left, surprised, 10, 6, 6, 4);
   }
 
   void draw_mouth_smile_(int cx, int y, int w, int h, uint16_t color) {
@@ -819,18 +793,108 @@ class Box3LCD : public display::DisplayBuffer {
     this->draw_filled_circle_(cx, y, r / 2, color);
   }
 
-  uint16_t mix_color_(uint16_t c1, uint16_t c2, int y, int h) {
-    if (h <= 1) return c1;
-    float t = static_cast<float>(y) / static_cast<float>(h - 1);
-    auto lerp = [](uint8_t a, uint8_t b, float tval) -> uint8_t {
-      return static_cast<uint8_t>(a + (b - a) * tval);
-    };
-    uint8_t r1 = (c1 >> 11) & 0x1F, g1 = (c1 >> 5) & 0x3F, b1 = c1 & 0x1F;
-    uint8_t r2 = (c2 >> 11) & 0x1F, g2 = (c2 >> 5) & 0x3F, b2 = c2 & 0x1F;
-    uint8_t r = lerp(r1, r2, t);
-    uint8_t g = lerp(g1, g2, t);
-    uint8_t b = lerp(b1, b2, t);
-    return static_cast<uint16_t>((r << 11) | (g << 5) | b);
+  void draw_leaf_(int cx, int cy, int w, int h, int dir) {
+    // simple oval leaf; dir=-1 left, dir=+1 right
+    for (int y = -h / 2; y <= h / 2; y++) {
+      for (int x = -w / 2; x <= w / 2; x++) {
+        float nx = static_cast<float>(x) / (w / 2.0f);
+        float ny = static_cast<float>(y) / (h / 2.0f);
+        if (nx * nx + ny * ny <= 1.0f) {
+          this->set_pixel_(cx + dir * x, cy + y, 0x07E0);
+        }
+      }
+    }
+  }
+
+  // --- Canvas 1: kawaii emoji animation (user-added) ---
+  void draw_emoji_canvas_() {
+    for (int y = 0; y < LCD_HEIGHT; y++) {
+      uint16_t row_color = this->mix_color_(0x7FEF /*mint*/, 0xF81F /*pink*/, y, LCD_HEIGHT);
+      uint16_t *row = &buffer_[y * LCD_WIDTH];
+      std::fill(row, row + LCD_WIDTH, row_color);
+    }
+
+    int frame = (this->emoji_tick_ / 6) % 4;       // cycle through expressions
+    int bob = static_cast<int>((this->emoji_tick_ % 20) - 10);  // small wobble
+
+    const int cx = LCD_WIDTH / 2;
+    const int cy = LCD_HEIGHT / 2 + bob;
+    const int R_HEAD = 70;
+    const uint16_t COLOR_HEAD = 0xFFE0;   // warm yellow
+    const uint16_t COLOR_STROKE = 0x0000; // black outlines
+    const uint16_t COLOR_BLUSH = 0xF9B2;  // soft pink cheeks
+
+    this->draw_filled_circle_(cx, cy, R_HEAD, COLOR_HEAD);
+    this->draw_circle_outline_(cx, cy, R_HEAD, COLOR_STROKE);
+    this->draw_filled_rect_(cx - 40, cy + 10, 16, 8, COLOR_BLUSH);
+    this->draw_filled_rect_(cx + 24, cy + 10, 16, 8, COLOR_BLUSH);
+
+    switch (frame) {
+      case 0:  // big smile
+        this->draw_emoji_eyes_(cx, cy, false, false);
+        this->draw_mouth_smile_(cx, cy + 30, 32, 10, COLOR_STROKE);
+        break;
+      case 1:  // laugh
+        this->draw_emoji_eyes_(cx, cy, false, false);
+        this->draw_mouth_open_(cx, cy + 32, 36, 18, COLOR_STROKE);
+        break;
+      case 2:  // wink + tongue
+        this->draw_emoji_eyes_(cx, cy, true, false);
+        this->draw_mouth_tongue_(cx, cy + 30, 32, 12, COLOR_STROKE);
+        break;
+      case 3:  // surprised
+      default:
+        this->draw_emoji_eyes_(cx, cy, false, true);
+        this->draw_mouth_o_(cx, cy + 28, 12, COLOR_STROKE);
+        break;
+    }
+  }
+
+  // --- Canvas 2: watering demo (cute plant + water) ---
+  void draw_watering_canvas_() {
+    for (int y = 0; y < LCD_HEIGHT; y++) {
+      uint16_t row_color = this->mix_color_(0x7E3F /*sky*/, 0x07E0 /*grass*/, y, LCD_HEIGHT);
+      uint16_t *row = &buffer_[y * LCD_WIDTH];
+      std::fill(row, row + LCD_WIDTH, row_color);
+    }
+
+    const int soil_h = 60;
+    const uint16_t COLOR_SOIL = 0x6200;   // brown
+    for (int y = LCD_HEIGHT - soil_h; y < LCD_HEIGHT; y++) {
+      uint16_t *row = &buffer_[y * LCD_WIDTH];
+      std::fill(row, row + LCD_WIDTH, COLOR_SOIL);
+    }
+
+    const int pot_w = 120;
+    const int pot_h = 60;
+    const int pot_x = (LCD_WIDTH - pot_w) / 2;
+    const int pot_y = LCD_HEIGHT - soil_h - pot_h + 10;
+    const uint16_t COLOR_POT = 0xA145; // terracotta
+    this->draw_filled_rect_(pot_x, pot_y, pot_w, pot_h, COLOR_POT);
+    this->draw_filled_rect_(pot_x - 6, pot_y - 10, pot_w + 12, 14, COLOR_POT);
+
+    float wave = std::sin(static_cast<float>(this->watering_tick_) * 0.2f);
+    int water_h = 20 + static_cast<int>(wave * 6);
+    const uint16_t COLOR_WATER = 0x5D9B; // cyan-ish
+    this->draw_filled_rect_(pot_x + 6, pot_y + pot_h - water_h, pot_w - 12, water_h, COLOR_WATER);
+
+    const uint16_t COLOR_STEM = 0x03E0;  // green
+    int stem_x = LCD_WIDTH / 2;
+    int stem_y0 = pot_y - 10;
+    int stem_h = 80;
+    this->draw_filled_rect_(stem_x - 3, stem_y0 - stem_h, 6, stem_h, COLOR_STEM);
+    this->draw_leaf_(stem_x - 20, stem_y0 - 50, 32, 12, -1);
+    this->draw_leaf_(stem_x + 20, stem_y0 - 30, 32, 12, +1);
+
+    int face_y = stem_y0 - stem_h - 10 + static_cast<int>(wave * 4);
+    const int R_FACE = 26;
+    const uint16_t COLOR_FACE = 0xFFE0;
+    this->draw_filled_circle_(stem_x, face_y, R_FACE, COLOR_FACE);
+    this->draw_circle_outline_(stem_x, face_y, R_FACE, 0x0000);
+    this->draw_flower_eyes_(stem_x, face_y, false, false);
+    this->draw_mouth_smile_(stem_x, face_y + 12, 18, 6, 0x0000);
+
+    this->draw_text_scaled_(10, 10, "Watering demo", 0xFFFF, 2);
   }
 
   // --- Helper: draw a weather icon based on Home Assistant weather text ---
