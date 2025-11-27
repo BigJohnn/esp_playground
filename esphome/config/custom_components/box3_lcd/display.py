@@ -17,6 +17,8 @@ CONF_NEWS = "news"
 CONF_TIME = "time_id"
 CONF_OUTDOOR_TEMPERATURE = "outdoor_temperature"
 CONF_PODCAST = "podcast"
+CONF_LLM_INPUT = "llm_input"
+CONF_LLM_OUTPUT = "llm_output"
 
 CONFIG_SCHEMA = display.BASIC_DISPLAY_SCHEMA.extend(
     {
@@ -30,6 +32,8 @@ CONFIG_SCHEMA = display.BASIC_DISPLAY_SCHEMA.extend(
         cv.Optional(CONF_NEWS): cv.use_id(text_sensor.TextSensor),
         cv.Optional(CONF_PODCAST): cv.use_id(text_sensor.TextSensor),
         cv.Optional(CONF_TIME): cv.use_id(time_comp.RealTimeClock),
+        cv.Optional(CONF_LLM_INPUT): cv.use_id(text_sensor.TextSensor),
+        cv.Optional(CONF_LLM_OUTPUT): cv.use_id(text_sensor.TextSensor),
     }
 ).extend(cv.polling_component_schema("1s"))
 
@@ -73,3 +77,11 @@ def to_code(config):
     if CONF_TIME in config:
         t = yield cg.get_variable(config[CONF_TIME])
         cg.add(var.set_time(t))
+
+    if CONF_LLM_INPUT in config:
+        ts = yield cg.get_variable(config[CONF_LLM_INPUT])
+        cg.add(var.set_llm_input_sensor(ts))
+
+    if CONF_LLM_OUTPUT in config:
+        ts = yield cg.get_variable(config[CONF_LLM_OUTPUT])
+        cg.add(var.set_llm_output_sensor(ts))

@@ -120,8 +120,10 @@ class Box3LCD : public display::DisplayBuffer {
   void set_news_sensor(text_sensor::TextSensor *s) { this->news_ = s; }
   void set_outdoor_temperature_sensor(sensor::Sensor *s) { this->outdoor_temperature_ = s; }
   void set_podcast_sensor(text_sensor::TextSensor *s) { this->podcast_ = s; }
+  void set_llm_input_sensor(text_sensor::TextSensor *s) { this->llm_input_ = s; }
+  void set_llm_output_sensor(text_sensor::TextSensor *s) { this->llm_output_ = s; }
   void set_time(time::RealTimeClock *t) { this->time_ = t; }
-  void set_canvas(uint8_t c) { this->canvas_ = static_cast<uint8_t>(c % 3); }
+  void set_canvas(uint8_t c) { this->canvas_ = static_cast<uint8_t>(c % 4); }
 
  protected:
   void draw_absolute_pixel_internal(int x, int y, Color color) override {
@@ -147,6 +149,7 @@ class Box3LCD : public display::DisplayBuffer {
     // canvas_ == 0 : regular dashboard
     // canvas_ == 1 : kawaii emoji animation
     // canvas_ == 2 : watering demo (cute plant + water animation)
+    // canvas_ == 3 : codex chat view (voice -> LLM text I/O)
     if (this->canvas_ == 1) {
       this->draw_emoji_canvas_();
       this->flush_();
@@ -157,6 +160,11 @@ class Box3LCD : public display::DisplayBuffer {
       this->draw_watering_canvas_();
       this->flush_();
       this->watering_tick_++;
+      return;
+    }
+    if (this->canvas_ == 3) {
+      this->draw_codex_canvas_();
+      this->flush_();
       return;
     }
 
@@ -555,6 +563,8 @@ class Box3LCD : public display::DisplayBuffer {
   text_sensor::TextSensor *news_{nullptr};
   sensor::Sensor *outdoor_temperature_{nullptr};
   text_sensor::TextSensor *podcast_{nullptr};
+  text_sensor::TextSensor *llm_input_{nullptr};
+  text_sensor::TextSensor *llm_output_{nullptr};
   time::RealTimeClock *time_{nullptr};
   uint8_t canvas_{0};
   uint32_t emoji_tick_{0};
@@ -649,6 +659,41 @@ class Box3LCD : public display::DisplayBuffer {
       this->draw_char_scaled_(cx, y, c, color, scale);
       cx += adv;
       if (cx >= LCD_WIDTH) break;  // avoid overflow
+    }
+  }
+
+  // --- Helper: constrain to printable ASCII for our 5x7 font ---
+  std::string sanitize_ascii_(const std::string &src) {
+    std::string out;
+    out.reserve(src.size());
+    for (unsigned char uc : src) {
+      if (uc >= 32 && uc <= 126) {
+        out.push_back(static_cast<char>(uc));
+      } else if (uc == '\n' || uc == '\r' || uc == '\t') {
+        out.push_back(' ');
+      } else {
+        out.push_back('?');
+      }
+    }
+    return out;
+  }
+
+  // --- Helper: draw multi-line block with simple fixed-width wrapping ---
+  void draw_text_block_(int x, int y, int w, int max_lines, const std::string &text, uint16_t color, int scale) {
+    if (w <= 0 || scale <= 0) return;
+    const int chars_per_line = w / (FONT_CHAR_WIDTH * scale);
+    if (chars_per_line <= 0) return;
+    std::string safe = this->sanitize_ascii_(text);
+    size_t idx = 0;
+    for (int line = 0; line < max_lines && idx < safe.size(); line++) {
+      size_t take = safe.size() - idx;
+      if (take > static_cast<size_t>(chars_per_line)) {
+        take = static_cast<size_t>(chars_per_line);
+      }
+      std::string slice = safe.substr(idx, take);
+      int line_y = y + line * (FONT_CHAR_HEIGHT * scale + scale);  // add small spacing
+      this->draw_text_scaled_(x, line_y, slice, color, scale);
+      idx += take;
     }
   }
 
@@ -895,6 +940,68 @@ class Box3LCD : public display::DisplayBuffer {
     this->draw_mouth_smile_(stem_x, face_y + 12, 18, 6, 0x0000);
 
     this->draw_text_scaled_(10, 10, "Watering demo", 0xFFFF, 2);
+  }
+
+  // --- Canvas 3: Codex chat (voice prompt + LLM reply) ---
+  void draw_codex_canvas_() {
+    // background gradient
+    for (int y = 0; y < LCD_HEIGHT; y++) {
+      uint16_t row_color = this->mix_color_(0x39E7 /*deep blue*/, 0x7FEF /*mint*/, y, LCD_HEIGHT);
+      uint16_t *row = &buffer_[y * LCD_WIDTH];
+      std::fill(row, row + LCD_WIDTH, row_color);
+    }
+
+    const int margin = 10;
+    const uint16_t COLOR_PANEL = 0x18C3;  // soft gray
+    const uint16_t COLOR_TEXT = 0xFFFF;
+    const uint16_t COLOR_LABEL = 0xF81F;  // magenta-ish
+
+    // Panels: top for input, bottom for output
+    int panel_h = (LCD_HEIGHT - margin * 3) / 2;
+    int panel_w = LCD_WIDTH - margin * 2;
+    int top_y = margin;
+    int bot_y = margin * 2 + panel_h;
+
+    this->draw_filled_rect_(margin, top_y, panel_w, panel_h, COLOR_PANEL);
+    this->draw_filled_rect_(margin, bot_y, panel_w, panel_h, COLOR_PANEL);
+
+    // Titles
+    this->draw_text_scaled_(margin + 4, top_y + 4, "Voice prompt (->Codex)", COLOR_LABEL, 2);
+    this->draw_text_scaled_(margin + 4, bot_y + 4, "Codex reply", COLOR_LABEL, 2);
+
+    // Content
+    const int text_x = margin + 4;
+    const int text_w = panel_w - 8;
+    const int line_h_px = FONT_CHAR_HEIGHT * 2 + 2;
+    const int max_lines = (panel_h - 14) / line_h_px;
+
+    // Prompt with suffix
+    std::string prompt = this->get_llm_prompt_with_limit_();
+    if (prompt.empty()) {
+      prompt = "Waiting for speech input...";
+    }
+    this->draw_text_block_(text_x, top_y + 14, text_w, max_lines, prompt, COLOR_TEXT, 2);
+
+    std::string reply = (this->llm_output_ != nullptr && this->llm_output_->has_state())
+                            ? this->llm_output_->state
+                            : "";
+    if (reply.empty()) {
+      reply = "No reply yet.";
+    }
+    this->draw_text_block_(text_x, bot_y + 14, text_w, max_lines, reply, COLOR_TEXT, 2);
+  }
+
+  // Append 200-char limit hint to prompt if missing
+  std::string get_llm_prompt_with_limit_() {
+    const std::string suffix = "\xE3\x80\x81\xE5\xB0\x86\xE8\xBE\x93\xE5\x87\xBA\xE9\x99\x90\xE5\x88\xB6\xE5\x9C\xA8\x32\x30\x30\xE5\xAD\x97\xE4\xBB\xA5\xE5\x86\x85";  // ，将输出限制在200字以内
+    if (this->llm_input_ == nullptr || !this->llm_input_->has_state()) {
+      return "";
+    }
+    std::string prompt = this->llm_input_->state;
+    if (prompt.find(suffix) == std::string::npos) {
+      prompt += suffix;
+    }
+    return prompt;
   }
 
   // --- Helper: draw a weather icon based on Home Assistant weather text ---
