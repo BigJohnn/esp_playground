@@ -8,6 +8,8 @@ services:
       - ../config:/config
       - /run/dbus:/run/dbus:ro
       - /etc/localtime:/etc/localtime:ro
+      # Optional: give the container access to the USB bus (helps with some flashing tools)
+      - /dev/bus/usb:/dev/bus/usb
     environment:
       # - http_proxy=
       # - https_proxy=
@@ -17,12 +19,20 @@ services:
       - all_proxy=socks5://host.docker.internal:7897
       - TZ=Asia/Shanghai
       - SHELL=/bin/bash
+    # Map common serial device nodes into the container. On ESP32‑S3 the
+    # integrated USB Serial/JTAG usually enumerates as /dev/ttyACM0.
+    # Keep multiple mappings to be robust across adapters.
     devices:
+      - /dev/ttyACM0:/dev/ttyACM0
+      - /dev/ttyACM1:/dev/ttyACM1
       - /dev/ttyUSB0:/dev/ttyUSB0
+      - /dev/ttyUSB1:/dev/ttyUSB1
     restart: unless-stopped
     privileged: true
     extra_hosts: ["host.docker.internal:host-gateway"]
+    # The ESPHome web dashboard (if you run `esphome dashboard /config`) listens on 6052.
+    # Keep the mapping for convenience; CLI `esphome run` does not require it.
     ports:
-      - "6053:6053"
+      - "6052:6052"
     stdin_open: true
     tty: true

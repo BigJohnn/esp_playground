@@ -3,7 +3,7 @@ esphome:
   friendly_name: Korvo Audio
   name_add_mac_suffix: true
   comment: "ESP32-S3-Korvo-1 语音节点，将音频流送入 Home Assistant 管道"
-
+  
 external_components:
   - source:
       type: local
@@ -24,7 +24,7 @@ psram:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: INFO
+  level: DEBUG
 
 # Home Assistant API/OTA
 api:
@@ -61,11 +61,11 @@ korvo_audio:
   sda: 1
   scl: 2
   pa_pin: 38
-  speaker_sample_rate: 22050
+  speaker_sample_rate: 16000
   speaker_volume: 85
   mic_sample_rate: 16000
   mic_mclk_ratio: 256
-  mic_gain: 30DB
+  mic_gain: 24DB
   mic_bias: 2V87
   mic_tdm: true
 
@@ -97,9 +97,8 @@ speaker:
     i2s_audio_id: korvo_speaker_bus
     i2s_dout_pin: GPIO39
     dac_type: external
-    i2s_mode: primary
     bits_per_sample: 16bit
-    sample_rate: 22050
+    sample_rate: 16000
 
 # 可以从 HA 面板触发 Push-to-talk
 button:
@@ -115,7 +114,7 @@ voice_assistant:
   microphone: korvo_mic
   speaker: korvo_speaker
   auto_gain: 31dBFS        # Korvo 阵列默认增益
-  noise_suppression_level: 2
+  noise_suppression_level: 3
   use_wake_word: false     # 先用手动 PTT，后续可换唤醒词
   on_start:
     - logger.log: "开始录音并推送到 Home Assistant 管道"
@@ -136,3 +135,27 @@ voice_assistant:
           - message.c_str()
   on_end:
     - logger.log: "录音完成"
+# media_player:
+#   - platform: speaker
+#     id: korvo_media
+#     name: "Korvo Media Player"
+#     speaker: korvo_speaker
+
+output:
+  - platform: gpio
+    id: korvo_pa
+    pin: GPIO38
+
+switch:
+  - platform: output
+    name: Korvo PA Enable
+    id: korvo_pa_switch
+    output: korvo_pa
+    restore_mode: ALWAYS_ON
+
+media_player:
+  - platform: speaker
+    id: korvo_media
+    name: Korvo Media Player
+    announcement_pipeline:
+      speaker: korvo_speaker
