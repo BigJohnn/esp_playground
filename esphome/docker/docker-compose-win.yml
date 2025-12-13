@@ -1,0 +1,28 @@
+
+services:
+  esphome:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - ../config:/config
+      - /run/dbus:/run/dbus:ro
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      # - http_proxy=
+      # - https_proxy=
+      # - all_proxy=
+      - http_proxy=http://host.docker.internal:7897
+      - https_proxy=http://host.docker.internal:7897
+      - all_proxy=socks5://host.docker.internal:7897
+      - TZ=Asia/Shanghai
+      - SHELL=/bin/bash
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+    restart: unless-stopped
+    privileged: true
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports:
+      - "6053:6053"
+    stdin_open: true
+    tty: true

@@ -220,7 +220,7 @@ static esp_err_t es7210_set_i2s_sample_rate(es7210_dev_handle_t handle, uint32_t
     uint32_t mclk_freq_hz = sample_rate_hz * mclk_ratio;
     const coeff_div_t *coeff_div = es7210_get_coeff(mclk_freq_hz, sample_rate_hz);
     ESP_RETURN_ON_FALSE(coeff_div, ESP_ERR_NOT_SUPPORTED, TAG,
-                        "unable to set %"PRIu32"Hz sample rate with %"PRIu32"Hz MCLK", sample_rate_hz, mclk_freq_hz);
+                        "unable to set %" PRIu32 "Hz sample rate with %" PRIu32 "Hz MCLK", sample_rate_hz, mclk_freq_hz);
     /* Set osr */
     ES7210_WRITE_REG(ES7210_OSR_REG07, coeff_div->osr);
     /* Set adc_div & doubler & dll */
@@ -229,7 +229,7 @@ static esp_err_t es7210_set_i2s_sample_rate(es7210_dev_handle_t handle, uint32_t
     ES7210_WRITE_REG(ES7210_LRCK_DIVH_REG04, coeff_div->lrck_h);
     ES7210_WRITE_REG(ES7210_LRCK_DIVL_REG05, coeff_div->lrck_l);
 
-    ESP_LOGI(TAG, "sample rate: %"PRIu32"Hz, mclk frequency: %"PRIu32"Hz", sample_rate_hz, mclk_freq_hz);
+    ESP_LOGI(TAG, "sample rate: %" PRIu32 "Hz, mclk frequency: %" PRIu32 "Hz", sample_rate_hz, mclk_freq_hz);
     return ESP_OK;
 }
 
@@ -262,7 +262,7 @@ esp_err_t es7210_new_codec(const es7210_i2c_config_t *i2c_conf, es7210_dev_handl
     ESP_RETURN_ON_FALSE(i2c_conf, ESP_ERR_INVALID_ARG, TAG, "invalid device config pointer");
     ESP_RETURN_ON_FALSE(handle_out, ESP_ERR_INVALID_ARG, TAG, "invalid device handle pointer");
 
-    struct es7210_dev_t *handle = calloc(1, sizeof(struct es7210_dev_t));
+    auto *handle = static_cast<es7210_dev_t *>(calloc(1, sizeof(struct es7210_dev_t)));
     ESP_RETURN_ON_FALSE(handle, ESP_ERR_NO_MEM, TAG, "memory allocation for device handler failed");
 
     handle->i2c_port = i2c_conf->i2c_port;
