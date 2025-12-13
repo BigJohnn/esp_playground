@@ -19,7 +19,8 @@ services:
       - SHELL=/bin/bash
     restart: unless-stopped
     privileged: true
-    ports:
-      - "8123:8123"
+    network_mode: host
+    # ports:
+    #   - "8123:8123"
     stdin_open: true
     tty: true

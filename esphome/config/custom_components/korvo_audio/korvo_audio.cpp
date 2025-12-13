@@ -88,8 +88,10 @@ bool KorvoAudio::init_speaker_codec_() {
   es8311_clock_config_t clk_cfg = {};
   clk_cfg.mclk_inverted = false;
   clk_cfg.sclk_inverted = false;
-  clk_cfg.mclk_from_mclk_pin = true;
-  clk_cfg.mclk_frequency = static_cast<int>(this->speaker_sample_rate_ * 256);
+  // clk_cfg.mclk_from_mclk_pin = true;
+  // clk_cfg.mclk_frequency = static_cast<int>(this->speaker_sample_rate_ * 256);
+  clk_cfg.mclk_from_mclk_pin = false;
+  clk_cfg.mclk_frequency = 0;
   clk_cfg.sample_frequency = static_cast<int>(this->speaker_sample_rate_);
 
   esp_err_t err = es8311_init(this->es8311_, &clk_cfg, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16);

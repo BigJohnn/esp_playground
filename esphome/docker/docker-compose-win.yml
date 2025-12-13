@@ -29,10 +29,11 @@ services:
       - /dev/ttyUSB1:/dev/ttyUSB1
     restart: unless-stopped
     privileged: true
-    extra_hosts: ["host.docker.internal:host-gateway"]
+    # extra_hosts: ["host.docker.internal:host-gateway"]
     # The ESPHome web dashboard (if you run `esphome dashboard /config`) listens on 6052.
     # Keep the mapping for convenience; CLI `esphome run` does not require it.
-    ports:
-      - "6052:6052"
+    # ports:
+    #   - "6052:6052"
+    network_mode: host
     stdin_open: true
     tty: true

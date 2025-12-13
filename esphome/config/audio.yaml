@@ -60,9 +60,10 @@ time:
 korvo_audio:
   sda: 1
   scl: 2
+  i2c_frequency: 100000
   pa_pin: 38
   speaker_sample_rate: 16000
-  speaker_volume: 85
+  speaker_volume: 100
   mic_sample_rate: 16000
   mic_mclk_ratio: 256
   mic_gain: 24DB
@@ -103,6 +104,25 @@ speaker:
 # 可以从 HA 面板触发 Push-to-talk
 button:
   - platform: template
+    name: "Speaker Beep Test"
+    on_press:
+      - speaker.play:
+          id: korvo_speaker
+          data: !lambda |-
+            const int sr = 16000;
+            const float freq = 1000.0f;  // 1 kHz
+            const int dur_ms = 300;
+            const int n = sr * dur_ms / 1000;
+            std::vector<uint8_t> out;
+            out.reserve(n * 2);
+            for (int i = 0; i < n; i++) {
+              float s = sinf(2.0f * 3.1415926f * freq * i / sr);
+              int16_t v = (int16_t)(s * 10000);
+              out.push_back((uint8_t)(v & 0xFF));        // little-endian 16-bit
+              out.push_back((uint8_t)((v >> 8) & 0xFF));
+            }
+            return out;
+  - platform: template
     name: "Korvo 语音录入"
     id: korvo_ptt
     on_press:
@@ -141,17 +161,18 @@ voice_assistant:
 #     name: "Korvo Media Player"
 #     speaker: korvo_speaker
 
-output:
-  - platform: gpio
-    id: korvo_pa
-    pin: GPIO38
-
-switch:
-  - platform: output
-    name: Korvo PA Enable
-    id: korvo_pa_switch
-    output: korvo_pa
-    restore_mode: ALWAYS_ON
+# output:
+#   - platform: gpio
+#     inverted: true
+#     id: korvo_pa
+#     pin: GPIO38
+    
+# switch:
+#   - platform: output
+#     name: Korvo PA Enable
+#     id: korvo_pa_switch
+#     output: korvo_pa
+#     restore_mode: ALWAYS_ON
 
 media_player:
   - platform: speaker
