@@ -3,7 +3,7 @@ esphome:
   friendly_name: Korvo Audio
   name_add_mac_suffix: true
   comment: "ESP32-S3-Korvo-1 语音节点，将音频流送入 Home Assistant 管道"
-  
+
 external_components:
   - source:
       type: local
@@ -62,7 +62,7 @@ korvo_audio:
   scl: 2
   i2c_frequency: 100000
   pa_pin: 38
-  speaker_sample_rate: 16000
+  speaker_sample_rate: 22050
   speaker_volume: 100
   mic_sample_rate: 16000
   mic_mclk_ratio: 256
@@ -100,6 +100,20 @@ speaker:
     dac_type: external
     bits_per_sample: 16bit
     sample_rate: 16000
+  - platform: mixer
+    id: korvo_mixer
+    output_speaker: korvo_speaker
+    source_speakers:
+      - id: announcement_spk_mixer_input
+      - id: media_spk_mixer_input
+
+  - platform: resampler
+    id: media_spk_resampling_input
+    output_speaker: media_spk_mixer_input
+
+  - platform: resampler
+    id: announcement_spk_resampling_input
+    output_speaker: announcement_spk_mixer_input
 
 # 可以从 HA 面板触发 Push-to-talk
 button:
@@ -108,6 +122,23 @@ button:
     on_press:
       - speaker.play:
           id: korvo_speaker
+          # data: !lambda |-
+          #   const int sr = 16000;
+          #   const float freq = 1000.0f;
+          #   const int dur_ms = 300;
+          #   const int n = sr * dur_ms / 1000;
+          #   std::vector<uint8_t> out;
+          #   out.reserve(n * 4);  // 16-bit stereo: 4 bytes/frame
+          #   for (int i = 0; i < n; i++) {
+          #     float s = sinf(2.0f * 3.1415926f * freq * i / sr);
+          #     int16_t v = (int16_t)(s * 12000);  // 适中幅度
+          #     // LR 交错: [L_lo, L_hi, R_lo, R_hi]
+          #     out.push_back((uint8_t)(v & 0xFF));
+          #     out.push_back((uint8_t)((v >> 8) & 0xFF));
+          #     out.push_back((uint8_t)(v & 0xFF));
+          #     out.push_back((uint8_t)((v >> 8) & 0xFF));
+          #   }
+          #   return out;
           data: !lambda |-
             const int sr = 16000;
             const float freq = 1000.0f;  // 1 kHz
@@ -155,28 +186,14 @@ voice_assistant:
           - message.c_str()
   on_end:
     - logger.log: "录音完成"
-# media_player:
-#   - platform: speaker
-#     id: korvo_media
-#     name: "Korvo Media Player"
-#     speaker: korvo_speaker
-
-# output:
-#   - platform: gpio
-#     inverted: true
-#     id: korvo_pa
-#     pin: GPIO38
-    
-# switch:
-#   - platform: output
-#     name: Korvo PA Enable
-#     id: korvo_pa_switch
-#     output: korvo_pa
-#     restore_mode: ALWAYS_ON
 
 media_player:
   - platform: speaker
     id: korvo_media
     name: Korvo Media Player
+    media_pipeline:
+      speaker: media_spk_resampling_input
+      num_channels: 2
     announcement_pipeline:
-      speaker: korvo_speaker
+      speaker: announcement_spk_resampling_input
+      num_channels: 1

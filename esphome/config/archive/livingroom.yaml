@@ -1,0 +1,249 @@
+esphome:
+  name: workspace
+  on_boot:
+    priority: 800
+    then:
+      - output.turn_on: lcd_ctrl
+
+external_components:
+  - source:
+      type: local
+      path: custom_components
+
+esp32:
+  board: esp32s3box
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  password: !secret api_password
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Workspace Fallback Hotspot"
+    password: "80vZ4cytFZGz"
+
+captive_portal:
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+i2c:
+  - id: i2c_sensors
+    sda: 41      # SENSOR 底座 SDA
+    scl: 40      # SENSOR 底座 SCL
+    scan: true
+
+  # 板载触摸 I2C 总线（ESP-BOX-3: SDA=GPIO8, SCL=GPIO18）
+  - id: i2c_touch
+    sda: 8
+    scl: 18
+    # 触摸芯片已确认在此总线上，常规使用时关闭扫描
+    scan: false
+
+sensor:
+  # ESP32-S3-BOX-3-SENSOR 底座上的 AHT20 温湿度
+  - platform: aht10
+    variant: AHT20
+    i2c_id: i2c_sensors
+    temperature:
+      id: temperature
+      name: "Workspace Temperature"
+    humidity:
+      id: humidity
+      name: "Workspace Humidity"
+    update_interval: 1s
+
+  # 股票价格（从 Home Assistant 获取，快手 HK1024）
+  - platform: homeassistant
+    id: stock_price
+    entity_id: sensor.1024_hk
+
+  # 室外温度（来自 Home Assistant 天气实体 weather.forecast_home）
+  - platform: homeassistant
+    id: outside_temperature
+    entity_id: weather.forecast_home
+    attribute: temperature
+
+binary_sensor:
+  # 24GHz 雷达人体存在检测（AT581x，数字输出接 GPIO21）
+  - platform: gpio
+    id: radar_presence
+    name: "Workspace Presence"
+    device_class: occupancy
+    pin:
+      number: GPIO21
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_off: 120s   # 2 分钟无人才判定为离开
+
+  # ESP32-S3-BOX-3 底部圆形 "Home" 触摸按键（GT911 外置按键 index 0）
+  - platform: gt911
+    id: home_key
+    name: "Box3 Home Key"
+    index: 0
+    on_press:
+      - logger.log: "Home key PRESSED"
+    on_release:
+      - logger.log: "Home key RELEASED"
+
+text_sensor:
+  # 今日事项
+  - platform: homeassistant
+    id: calendar_event
+    entity_id: calendar.personal
+
+  # 新闻标题
+  - platform: homeassistant
+    id: news_headline
+    # 这里复用为“当前天气预报”，从 Home Assistant 天气实体读取
+    # 如果你的天气实体 ID 不同，请把 weather.forecast_home 改成实际的 entity_id
+    entity_id: weather.forecast_home
+
+touchscreen:
+  - platform: gt911
+    id: box3_touch
+    i2c_id: i2c_touch
+    interrupt_pin: GPIO3       # BSP_LCD_TOUCH_INT
+    # reset_pin 可选，GT911 与 LCD 共用复位逻辑，由板级电路处理
+    on_touch:
+      - lambda: |-
+          for (auto &t : touches) {
+            ESP_LOGD("gt911", "Touch: x=%d, y=%d, state=%d", t.x, t.y, (int)t.state);
+          }
+
+output:
+  - platform: gpio
+    id: lcd_ctrl
+    pin: GPIO47
+    inverted: true
+
+display:
+  - platform: box3_lcd
+    id: my_display
+    temperature: temperature
+    humidity: humidity
+    radar: radar_presence
+    stock: stock_price
+    calendar: calendar_event
+    news: news_headline
+    outdoor_temperature: outside_temperature
+    time_id: ha_time
+
+# it.fill(COLOR_BLUE);
+# it.fill(COLOR_BLACK);
+# // 先继续用测试画面，确认能稳定写屏
+# it.printf(160, 120, id(font_large), COLOR_WHITE,
+#           TextAlign::CENTER, "TEST");
+# 显示配置
+# display:
+#   - platform: ili9xxx
+#     model: S3BOX
+#     invert_colors: true
+#     cs_pin: GPIO2          # LCD_CS
+#     dc_pin: GPIO0          # LCD_DC
+#     id: my_display
+#     update_interval: 5s
+#     lambda: |-
+#       // 背景
+#       it.fill(COLOR_BLACK);
+
+#       // 标题栏 - 时间
+#       it.strftime(10, 10, id(font_large), COLOR_WHITE,
+#                   TextAlign::TOP_LEFT, "%H:%M", id(ha_time).now());
+#       it.strftime(10, 50, id(font_small), COLOR_GRAY,
+#                   TextAlign::TOP_LEFT, "%Y-%m-%d %A", id(ha_time).now());
+
+#       // 分隔线
+#       it.line(0, 80, 320, 80, COLOR_GRAY);
+
+#       // 在家状态 + 温湿度（来自底座 AHT20 + 雷达）
+#       it.printf(10, 90, id(font_medium), COLOR_CYAN, "在家:");
+#       if (id(radar_presence).has_state()) {
+#         it.printf(80, 90, id(font_medium), COLOR_WHITE,
+#                   "%s", id(radar_presence).state ? "有人" : "无人");
+#       }
+
+#       it.printf(10, 120, id(font_medium), COLOR_ORANGE, "温度:");
+#       if (!isnan(id(temperature).state)) {
+#         it.printf(80, 120, id(font_medium), COLOR_WHITE,
+#                   "%.1f°C", id(temperature).state);
+#       }
+
+#       it.printf(180, 120, id(font_medium), COLOR_BLUE, "湿度:");
+#       if (!isnan(id(humidity).state)) {
+#         it.printf(240, 120, id(font_medium), COLOR_WHITE,
+#                   "%.0f%%", id(humidity).state);
+#       }
+
+#       // 分隔线
+#       it.line(0, 150, 320, 150, COLOR_GRAY);
+
+#       // 日历事项
+#       it.printf(10, 160, id(font_medium), COLOR_GREEN, "今日事项:");
+#       if (id(calendar_event).has_state()) {
+#         it.printf(10, 185, id(font_small), COLOR_WHITE,
+#                   "%s", id(calendar_event).state.c_str());
+#       }
+
+#       // 股票信息
+#       it.printf(10, 215, id(font_medium), COLOR_YELLOW, "股票:");
+#       if (id(stock_price).has_state()) {
+#         it.printf(80, 215, id(font_medium), COLOR_WHITE,
+#                   "$%.2f", id(stock_price).state);
+#       }
+
+# 字体配置（请确保对应 TTF 文件存在）
+# font:
+#   - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
+#     id: font_small
+#     size: 14
+#     glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
+
+#   - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
+#     id: font_medium
+#     size: 20
+#     glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
+
+#   - file: "fonts/Noto_Sans_SC/NotoSansSC-VariableFont_wght.ttf"
+#     id: font_large
+#     size: 36
+#     glyphs: "在家温湿度今日事项股票有人无°:.$%0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- "
+
+# 颜色定义
+color:
+  - id: COLOR_BLACK
+    hex: "000000"
+  - id: COLOR_WHITE
+    hex: "FFFFFF"
+  - id: COLOR_GRAY
+    hex: "808080"
+  - id: COLOR_CYAN
+    hex: "00FFFF"
+  - id: COLOR_ORANGE
+    hex: "FFA500"
+  - id: COLOR_BLUE
+    hex: "0000FF"
+  - id: COLOR_GREEN
+    hex: "00FF00"
+  - id: COLOR_YELLOW
+    hex: "FFFF00"
+  - id: my_red
+    red: 100%
+    green: 3%
+    blue: 5%
