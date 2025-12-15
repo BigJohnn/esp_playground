@@ -1,11 +1,10 @@
-
 services:
   esphome:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     volumes:
-      - ../config:/config
+      - ../../esphome/config:/config
       - /run/dbus:/run/dbus:ro
       - /etc/localtime:/etc/localtime:ro
       # Optional: give the container access to the USB bus (helps with some flashing tools)

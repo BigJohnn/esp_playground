@@ -1,0 +1,47 @@
+services:
+  esphome:
+    build:
+      context: ./docker/esphome
+      dockerfile: Dockerfile
+    volumes:
+      - ./esphome/config:/config
+      - /run/dbus:/run/dbus:ro
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - http_proxy=
+      - https_proxy=
+      - all_proxy=
+      - TZ=Asia/Shanghai
+      - SHELL=/bin/bash
+    restart: unless-stopped
+    privileged: true
+    # network_mode: host
+    ports: 
+      - "6052:6052"
+    stdin_open: true
+    tty: true
+
+  home_assistant:
+    build:
+      context: ./docker/home_assistant
+      dockerfile: Dockerfile
+    volumes:
+      - ./:/workspace
+      - ./home_assistant/config:/config
+      - /run/dbus:/run/dbus:ro
+    environment:
+      - http_proxy=
+      - https_proxy=
+      - all_proxy=
+      # - http_proxy=http://127.0.0.1:7897
+      # - https_proxy=http://127.0.0.1:7897
+      # - all_proxy=socks5://127.0.0.1:7897
+      - TZ=Asia/Shanghai
+      - SHELL=/bin/bash
+    restart: unless-stopped
+    privileged: true
+    # network_mode: host
+    ports: 
+      - "8123:8123"
+    stdin_open: true
+    tty: true

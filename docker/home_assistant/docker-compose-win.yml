@@ -1,12 +1,11 @@
-
 services:
   home_assistant:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     volumes:
-      - ../:/workspace
-      - ../config:/config
+      - ../../:/workspace
+      - ../../home_assistant/config:/config
       - /run/dbus:/run/dbus:ro
     environment:
       - http_proxy=
@@ -20,5 +19,7 @@ services:
     restart: unless-stopped
     privileged: true
     network_mode: host
+    # ports:
+    #   - "8123:8123"
     stdin_open: true
     tty: true
