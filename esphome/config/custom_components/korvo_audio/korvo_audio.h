@@ -33,6 +33,10 @@ class KorvoAudio : public Component {
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::HARDWARE; }
 
+  // Runtime diagnostics/tuning helpers (used from YAML template switches)
+  void dump_es8311_diag();
+  void set_dac_sclk_inverted(bool inv);
+
  protected:
   bool ensure_i2c_driver_();
   bool init_speaker_codec_();
@@ -55,6 +59,9 @@ class KorvoAudio : public Component {
   uint8_t mic_bias_reg_{ES7210_MIC_BIAS_2V87};
   bool mic_tdm_enable_{true};
   bool enable_pullups_{true};
+
+  // Some ES8311 boards require BCLK inversion; default off.
+  bool sclk_inverted_{false};
 
   bool i2c_ready_{false};
   es8311_handle_t es8311_{nullptr};

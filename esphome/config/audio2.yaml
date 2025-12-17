@@ -1,0 +1,196 @@
+esphome:
+  name: korvo-audio
+  friendly_name: Korvo Audio
+  name_add_mac_suffix: true
+  comment: "ESP32-S3-Korvo-1 语音节点，将音频流送入 Home Assistant 管道"
+
+external_components:
+  - source:
+      type: local
+      path: custom_components
+
+esp32:
+  variant: esp32s3
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      # 语音处理依赖更大的缓存与 PSRAM
+      CONFIG_ESP32S3_DATA_CACHE_64KB: y
+      CONFIG_ESP32S3_SPIRAM_SUPPORT: y
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  level: DEBUG
+
+# Home Assistant API/OTA
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  manual_ip:
+    # Set this to the IP of the ESP
+    static_ip: 192.168.1.42
+    # Set this to the IP address of the router. Often ends with .1
+    gateway: 192.168.1.1
+    # The subnet of the network. 255.255.255.0 works for most home networks.
+    subnet: 255.255.255.0
+    # Optional: DNS server
+    dns1: 192.168.1.1
+  ap:
+    ssid: "Korvo Audio Fallback"
+    password: !secret ap_fallback_password
+
+captive_portal:
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+korvo_audio:
+  sda: 1
+  scl: 2
+  i2c_frequency: 100000
+  pa_pin: 38
+  # 与 i2s_audio 扬声器的采样率保持一致，避免编解码器与 I2S 时钟不匹配产生底噪
+  speaker_sample_rate: 16000
+  speaker_volume: 100
+  mic_sample_rate: 16000
+  mic_mclk_ratio: 256
+  mic_gain: 24DB
+  mic_bias: 2V87
+  mic_tdm: true
+
+# 两路 I2S：I2S0 -> ES8311 扬声器, I2S1 -> ES7210 麦阵列（依据 esp-bsp/bsp/esp32_s3_korvo_1/include/bsp/esp32_s3_korvo_1.h）
+i2s_audio:
+  - id: korvo_speaker_bus
+    i2s_mclk_pin: GPIO42
+    i2s_bclk_pin: GPIO40
+    i2s_lrclk_pin: GPIO41
+  - id: korvo_mic_bus
+    i2s_mclk_pin: GPIO20
+    i2s_bclk_pin: GPIO10
+    i2s_lrclk_pin: GPIO9
+
+microphone:
+  - platform: i2s_audio
+    id: korvo_mic
+    i2s_audio_id: korvo_mic_bus
+    i2s_din_pin: GPIO11
+    channel: left
+    sample_rate: 16000
+    bits_per_sample: 32bit
+    pdm: false
+    adc_type: external
+
+speaker:
+  - platform: i2s_audio
+    id: korvo_speaker
+    i2s_audio_id: korvo_speaker_bus
+    i2s_dout_pin: GPIO39
+    dac_type: external
+    bits_per_sample: 16bit
+    sample_rate: 16000
+  - platform: mixer
+    id: korvo_mixer
+    output_speaker: korvo_speaker
+    source_speakers:
+      # 增大缓冲避免启动与换源时下溢导致的噪声
+      - id: announcement_spk_mixer_input
+        buffer_duration: 500ms
+        timeout: 2s
+      - id: media_spk_mixer_input
+        buffer_duration: 500ms
+        timeout: 2s
+
+  - platform: resampler
+    id: media_spk_resampling_input
+    output_speaker: media_spk_mixer_input
+
+  - platform: resampler
+    id: announcement_spk_resampling_input
+    output_speaker: announcement_spk_mixer_input
+    # 初始几帧延迟，避免第一包数据过短造成啸叫/咔嗒
+    buffer_duration: 500ms
+
+# 可以从 HA 面板触发 Push-to-talk
+button:
+  - platform: template
+    name: "Speaker Beep Test"
+    on_press:
+      - speaker.play:
+          # 直接写入 mixer 的公告输入，规避 resampler/I2S 启动瞬态
+          id: announcement_spk_mixer_input
+          # 发送 16-bit 立体声（LR 交错），确保 I2S 收到完整帧，避免半帧造成的噪声
+          data: !lambda |-
+            const int sr = 16000;
+            const float freq = 1000.0f;
+            const int dur_ms = 300;
+            const int n = sr * dur_ms / 1000;
+            std::vector<uint8_t> out;
+            out.reserve(n * 4);  // 16-bit stereo: 4 bytes/frame
+            for (int i = 0; i < n; i++) {
+              float s = sinf(2.0f * 3.1415926f * freq * i / sr);
+              int16_t v = (int16_t)(s * 12000);
+              // LR interleaved: [L_lo, L_hi, R_lo, R_hi]
+              out.push_back((uint8_t)(v & 0xFF));
+              out.push_back((uint8_t)((v >> 8) & 0xFF));
+              out.push_back((uint8_t)(v & 0xFF));
+              out.push_back((uint8_t)((v >> 8) & 0xFF));
+            }
+            return out;
+  - platform: template
+    name: "Korvo 语音录入"
+    id: korvo_ptt
+    on_press:
+      - voice_assistant.start:
+          id: korvo_assistant
+
+voice_assistant:
+  id: korvo_assistant
+  microphone: korvo_mic
+  speaker: korvo_speaker
+  auto_gain: 31dBFS        # Korvo 阵列默认增益
+  noise_suppression_level: 3
+  use_wake_word: false     # 先用手动 PTT，后续可换唤醒词
+  on_start:
+    - logger.log: "开始录音并推送到 Home Assistant 管道"
+  on_listening:
+    - logger.log: "流式语音 -> STT"
+  on_stt_end:
+    - logger.log: "Home Assistant STT 返回结果"
+  on_error:
+    - homeassistant.event:
+        event: esphome.korvo_voice_error
+        data:
+          code: !lambda 'return code;'
+          message: !lambda 'return message;'
+    - logger.log:
+        level: ERROR
+        format: "Voice assistant error: %s"
+        args:
+          - message.c_str()
+  on_end:
+    - logger.log: "录音完成"
+
+media_player:
+  - platform: speaker
+    id: korvo_media
+    name: Korvo Media Player
+    media_pipeline:
+      speaker: media_spk_resampling_input
+      num_channels: 2
+    announcement_pipeline:
+      speaker: announcement_spk_resampling_input
+      # 用 2 声道保证 I2S 始终输出 LR 成帧，部分编解码/板卡只接了一边
+      num_channels: 2

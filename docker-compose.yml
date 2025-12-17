@@ -7,10 +7,16 @@ services:
       - ./esphome/config:/config
       - /run/dbus:/run/dbus:ro
       - /etc/localtime:/etc/localtime:ro
+      - ./esphome/pio:/root/.platformio
+      - ./esphome/cache:/root/.cache
+      - ./esphome/espressif:/root/.espressif
     environment:
-      - http_proxy=
-      - https_proxy=
-      - all_proxy=
+      # - http_proxy=
+      # - https_proxy=
+      # - all_proxy=
+      - http_proxy=http://host.docker.internal:7897
+      - https_proxy=http://host.docker.internal:7897
+      - all_proxy=socks5://host.docker.internal:7897
       - TZ=Asia/Shanghai
       - SHELL=/bin/bash
     restart: unless-stopped
@@ -30,12 +36,12 @@ services:
       - ./home_assistant/config:/config
       - /run/dbus:/run/dbus:ro
     environment:
-      - http_proxy=
-      - https_proxy=
-      - all_proxy=
-      # - http_proxy=http://127.0.0.1:7897
-      # - https_proxy=http://127.0.0.1:7897
-      # - all_proxy=socks5://127.0.0.1:7897
+      # - http_proxy=
+      # - https_proxy=
+      # - all_proxy=
+      - http_proxy=http://host.docker.internal:7897
+      - https_proxy=http://host.docker.internal:7897
+      - all_proxy=socks5://host.docker.internal:7897
       - TZ=Asia/Shanghai
       - SHELL=/bin/bash
     restart: unless-stopped

@@ -87,9 +87,9 @@ bool KorvoAudio::init_speaker_codec_() {
 
   es8311_clock_config_t clk_cfg = {};
   clk_cfg.mclk_inverted = false;
-  clk_cfg.sclk_inverted = false;
-  // clk_cfg.mclk_from_mclk_pin = true;
-  // clk_cfg.mclk_frequency = static_cast<int>(this->speaker_sample_rate_ * 256);
+  clk_cfg.sclk_inverted = this->sclk_inverted_;
+  // Align with ESP-BSP (esp32_s3_korvo_1): derive MCLK from SCK (use_mclk = false)
+  // This matches bsp_audio_codec_speaker_init() where .use_mclk = false
   clk_cfg.mclk_from_mclk_pin = false;
   clk_cfg.mclk_frequency = 0;
   clk_cfg.sample_frequency = static_cast<int>(this->speaker_sample_rate_);
@@ -154,6 +154,34 @@ void KorvoAudio::configure_pa_pin_() {
   cfg.pull_up_en = GPIO_PULLUP_DISABLE;
   gpio_config(&cfg);
   gpio_set_level(static_cast<gpio_num_t>(this->power_amp_pin_), 1);
+}
+
+void KorvoAudio::dump_es8311_diag() {
+  if (!this->es8311_) {
+    ESP_LOGW(TAG, "ES8311 not initialized");
+    return;
+  }
+  // Use the driver's built-in register dump to avoid accessing internal symbols.
+  es8311_register_dump(this->es8311_);
+}
+
+void KorvoAudio::set_dac_sclk_inverted(bool inv) {
+  this->sclk_inverted_ = inv;
+  if (!this->es8311_) return;
+  // Re-apply clock config via public API to set BCLK invert bit.
+  es8311_clock_config_t clk_cfg = {};
+  clk_cfg.mclk_inverted = false;
+  clk_cfg.sclk_inverted = this->sclk_inverted_;
+  clk_cfg.mclk_from_mclk_pin = false;  // derive MCLK from BCLK (SCK)
+  clk_cfg.mclk_frequency = 0;
+  clk_cfg.sample_frequency = static_cast<int>(this->speaker_sample_rate_);
+
+  esp_err_t err = es8311_init(this->es8311_, &clk_cfg, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "ES8311 BCLK invert set to %s via re-init", inv ? "true" : "false");
+  } else {
+    ESP_LOGW(TAG, "Failed to re-init ES8311 for BCLK invert: %s", esp_err_to_name(err));
+  }
 }
 
 void KorvoAudio::log_result_(const char *target, esp_err_t err) {
