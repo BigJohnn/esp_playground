@@ -62,6 +62,7 @@ korvo_audio:
   scl: 2
   i2c_frequency: 100000
   pa_pin: 38
+  # 与 i2s_audio 扬声器的采样率保持一致，避免编解码器与 I2S 时钟不匹配产生底噪
   speaker_sample_rate: 22050
   speaker_volume: 100
   mic_sample_rate: 16000
@@ -104,8 +105,13 @@ speaker:
     id: korvo_mixer
     output_speaker: korvo_speaker
     source_speakers:
+      # 增大缓冲避免启动与换源时下溢导致的噪声
       - id: announcement_spk_mixer_input
+        buffer_duration: 500ms
+        timeout: 2s
       - id: media_spk_mixer_input
+        buffer_duration: 500ms
+        timeout: 2s
 
   - platform: resampler
     id: media_spk_resampling_input
@@ -114,6 +120,8 @@ speaker:
   - platform: resampler
     id: announcement_spk_resampling_input
     output_speaker: announcement_spk_mixer_input
+    # 初始几帧延迟，避免第一包数据过短造成啸叫/咔嗒
+    buffer_duration: 500ms
 
 # 可以从 HA 面板触发 Push-to-talk
 button:
@@ -121,35 +129,23 @@ button:
     name: "Speaker Beep Test"
     on_press:
       - speaker.play:
-          id: korvo_speaker
-          # data: !lambda |-
-          #   const int sr = 16000;
-          #   const float freq = 1000.0f;
-          #   const int dur_ms = 300;
-          #   const int n = sr * dur_ms / 1000;
-          #   std::vector<uint8_t> out;
-          #   out.reserve(n * 4);  // 16-bit stereo: 4 bytes/frame
-          #   for (int i = 0; i < n; i++) {
-          #     float s = sinf(2.0f * 3.1415926f * freq * i / sr);
-          #     int16_t v = (int16_t)(s * 12000);  // 适中幅度
-          #     // LR 交错: [L_lo, L_hi, R_lo, R_hi]
-          #     out.push_back((uint8_t)(v & 0xFF));
-          #     out.push_back((uint8_t)((v >> 8) & 0xFF));
-          #     out.push_back((uint8_t)(v & 0xFF));
-          #     out.push_back((uint8_t)((v >> 8) & 0xFF));
-          #   }
-          #   return out;
+          # 直接写入 mixer 的公告输入，规避 resampler/I2S 启动瞬态
+          id: announcement_spk_mixer_input
+          # 发送 16-bit 立体声（LR 交错），确保 I2S 收到完整帧，避免半帧造成的噪声
           data: !lambda |-
             const int sr = 16000;
-            const float freq = 1000.0f;  // 1 kHz
+            const float freq = 1000.0f;
             const int dur_ms = 300;
             const int n = sr * dur_ms / 1000;
             std::vector<uint8_t> out;
-            out.reserve(n * 2);
+            out.reserve(n * 4);  // 16-bit stereo: 4 bytes/frame
             for (int i = 0; i < n; i++) {
               float s = sinf(2.0f * 3.1415926f * freq * i / sr);
-              int16_t v = (int16_t)(s * 10000);
-              out.push_back((uint8_t)(v & 0xFF));        // little-endian 16-bit
+              int16_t v = (int16_t)(s * 12000);
+              // LR interleaved: [L_lo, L_hi, R_lo, R_hi]
+              out.push_back((uint8_t)(v & 0xFF));
+              out.push_back((uint8_t)((v >> 8) & 0xFF));
+              out.push_back((uint8_t)(v & 0xFF));
               out.push_back((uint8_t)((v >> 8) & 0xFF));
             }
             return out;
@@ -196,4 +192,5 @@ media_player:
       num_channels: 2
     announcement_pipeline:
       speaker: announcement_spk_resampling_input
-      num_channels: 1
+      # 用 2 声道保证 I2S 始终输出 LR 成帧，部分编解码/板卡只接了一边
+      num_channels: 2
