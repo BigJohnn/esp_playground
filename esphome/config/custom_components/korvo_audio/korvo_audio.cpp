@@ -127,7 +127,8 @@ bool KorvoAudio::init_mic_codec_() {
   codec.sample_rate_hz = this->mic_sample_rate_;
   codec.mclk_ratio = this->mic_mclk_ratio_;
   codec.i2s_format = ES7210_I2S_FMT_I2S;
-  codec.bit_width = ES7210_I2S_BITS_32B;
+  // Align with BSP: capture in 16-bit slots over TDM
+  codec.bit_width = ES7210_I2S_BITS_16B;
   codec.mic_bias = static_cast<es7210_mic_bias_t>(this->mic_bias_reg_);
   codec.mic_gain = static_cast<es7210_mic_gain_t>(this->mic_gain_reg_);
   codec.flags.tdm_enable = this->mic_tdm_enable_;

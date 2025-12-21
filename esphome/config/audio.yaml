@@ -60,7 +60,7 @@ time:
 korvo_audio:
   sda: 1
   scl: 2
-  i2c_frequency: 100000
+  i2c_frequency: 400000
   pa_pin: 38
   # 与 i2s_audio 扬声器的采样率保持一致，避免编解码器与 I2S 时钟不匹配产生底噪
   speaker_sample_rate: 22050
@@ -89,7 +89,7 @@ microphone:
     i2s_din_pin: GPIO11
     channel: left
     sample_rate: 16000
-    bits_per_sample: 32bit
+    bits_per_sample: 16bit
     pdm: false
     adc_type: external
 
@@ -100,7 +100,7 @@ speaker:
     i2s_dout_pin: GPIO39
     dac_type: external
     bits_per_sample: 16bit
-    sample_rate: 16000
+    sample_rate: 22050
   - platform: mixer
     id: korvo_mixer
     output_speaker: korvo_speaker
@@ -121,6 +121,7 @@ speaker:
     id: announcement_spk_resampling_input
     output_speaker: announcement_spk_mixer_input
     # 初始几帧延迟，避免第一包数据过短造成啸叫/咔嗒
+    # 同时作为抖动缓冲，针对 TTS 流适度放大
     buffer_duration: 500ms
 
 # 可以从 HA 面板触发 Push-to-talk
@@ -131,20 +132,18 @@ button:
       - speaker.play:
           # 直接写入 mixer 的公告输入，规避 resampler/I2S 启动瞬态
           id: announcement_spk_mixer_input
-          # 发送 16-bit 立体声（LR 交错），确保 I2S 收到完整帧，避免半帧造成的噪声
+          # 发送 16-bit 单声道，严格对齐 BSP MONO 配置
           data: !lambda |-
-            const int sr = 16000;
+            const int sr = 22050;
             const float freq = 1000.0f;
             const int dur_ms = 300;
             const int n = sr * dur_ms / 1000;
             std::vector<uint8_t> out;
-            out.reserve(n * 4);  // 16-bit stereo: 4 bytes/frame
+            out.reserve(n * 2);  // 16-bit mono: 2 bytes/frame
             for (int i = 0; i < n; i++) {
               float s = sinf(2.0f * 3.1415926f * freq * i / sr);
               int16_t v = (int16_t)(s * 12000);
-              // LR interleaved: [L_lo, L_hi, R_lo, R_hi]
-              out.push_back((uint8_t)(v & 0xFF));
-              out.push_back((uint8_t)((v >> 8) & 0xFF));
+              // Mono: [lo, hi]
               out.push_back((uint8_t)(v & 0xFF));
               out.push_back((uint8_t)((v >> 8) & 0xFF));
             }
@@ -189,8 +188,8 @@ media_player:
     name: Korvo Media Player
     media_pipeline:
       speaker: media_spk_resampling_input
-      num_channels: 2
+      num_channels: 1
     announcement_pipeline:
       speaker: announcement_spk_resampling_input
-      # 用 2 声道保证 I2S 始终输出 LR 成帧，部分编解码/板卡只接了一边
-      num_channels: 2
+      # 与 BSP 默认一致：扬声器 I2S 使用 MONO
+      num_channels: 1
