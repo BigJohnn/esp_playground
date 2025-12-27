@@ -69,7 +69,7 @@ korvo_audio:
   pa_pin: 38
   # 与 i2s_audio 扬声器的采样率保持一致，避免编解码器与 I2S 时钟不匹配产生底噪
   speaker_sample_rate: 22050
-  speaker_volume: 70
+  speaker_volume:  60
   mic_sample_rate: 16000
   mic_mclk_ratio: 256
   mic_gain: 24DB
@@ -124,14 +124,22 @@ speaker:
     output_speaker: media_spk_mixer_input
     buffer_duration: 250ms
     num_channels: 1
+    bits_per_sample: 16
+    sample_rate: 22050
+    filters: 32
+    taps: 32
 
   - platform: resampler
     id: announcement_spk_resampling_input
     output_speaker: announcement_spk_mixer_input
+    bits_per_sample: 16
+    sample_rate: 22050
+    filters: 32
+    taps: 32
     # 初始几帧延迟，避免第一包数据过短造成啸叫/咔嗒
     # 同时作为抖动缓冲，针对 TTS 流适度放大
     num_channels: 1
-    buffer_duration: 350ms
+    buffer_duration: 400ms
 
 # 可以从 HA 面板触发 Push-to-talk
 button:
