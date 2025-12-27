@@ -10,6 +10,8 @@ external_components:
       path: custom_components
 
 esp32:
+  cpu_frequency: 240MHz
+  board: esp32-s3-devkitc-1
   variant: esp32s3
   framework:
     type: esp-idf
@@ -104,13 +106,14 @@ speaker:
     dac_type: external
     bits_per_sample: 16bit
     sample_rate: 22050
+    timeout: 800ms
   - platform: mixer
     id: korvo_mixer
     output_speaker: korvo_speaker
     source_speakers:
       # 增大缓冲避免启动与换源时下溢导致的噪声
       - id: announcement_spk_mixer_input
-        buffer_duration: 300ms
+        buffer_duration: 350ms
         timeout: 2s
       - id: media_spk_mixer_input
         buffer_duration: 200ms
@@ -119,13 +122,16 @@ speaker:
   - platform: resampler
     id: media_spk_resampling_input
     output_speaker: media_spk_mixer_input
+    buffer_duration: 250ms
+    num_channels: 1
 
   - platform: resampler
     id: announcement_spk_resampling_input
     output_speaker: announcement_spk_mixer_input
     # 初始几帧延迟，避免第一包数据过短造成啸叫/咔嗒
     # 同时作为抖动缓冲，针对 TTS 流适度放大
-    buffer_duration: 300ms
+    num_channels: 1
+    buffer_duration: 350ms
 
 # 可以从 HA 面板触发 Push-to-talk
 button:
@@ -230,6 +236,7 @@ voice_assistant:
         transition_length: 800ms
     - logger.log: "录音完成"
 
+
 media_player:
   - platform: speaker
     id: korvo_media
@@ -239,5 +246,4 @@ media_player:
       num_channels: 1
     announcement_pipeline:
       speaker: announcement_spk_resampling_input
-      # 与 BSP 默认一致：扬声器 I2S 使用 MONO
       num_channels: 1
