@@ -14,6 +14,9 @@ esp32:
   framework:
     type: esp-idf
     sdkconfig_options:
+      CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ: "240"
+      CONFIG_FREERTOS_UNICORE: n
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "32768"
       # 语音处理依赖更大的缓存与 PSRAM
       CONFIG_ESP32S3_DATA_CACHE_64KB: y
       CONFIG_ESP32S3_SPIRAM_SUPPORT: y
@@ -24,7 +27,7 @@ psram:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: DEBUG
+  level: INFO
 
 # Home Assistant API/OTA
 api:
@@ -64,7 +67,7 @@ korvo_audio:
   pa_pin: 38
   # 与 i2s_audio 扬声器的采样率保持一致，避免编解码器与 I2S 时钟不匹配产生底噪
   speaker_sample_rate: 22050
-  speaker_volume: 100
+  speaker_volume: 70
   mic_sample_rate: 16000
   mic_mclk_ratio: 256
   mic_gain: 24DB
@@ -107,10 +110,10 @@ speaker:
     source_speakers:
       # 增大缓冲避免启动与换源时下溢导致的噪声
       - id: announcement_spk_mixer_input
-        buffer_duration: 500ms
+        buffer_duration: 300ms
         timeout: 2s
       - id: media_spk_mixer_input
-        buffer_duration: 500ms
+        buffer_duration: 200ms
         timeout: 2s
 
   - platform: resampler
@@ -122,7 +125,7 @@ speaker:
     output_speaker: announcement_spk_mixer_input
     # 初始几帧延迟，避免第一包数据过短造成啸叫/咔嗒
     # 同时作为抖动缓冲，针对 TTS 流适度放大
-    buffer_duration: 500ms
+    buffer_duration: 300ms
 
 # 可以从 HA 面板触发 Push-to-talk
 button:
@@ -155,6 +158,15 @@ button:
       - voice_assistant.start:
           id: korvo_assistant
 
+light:
+  - platform: esp32_rmt_led_strip
+    id: korvo_ring
+    name: "Korvo Ring"
+    pin: GPIO19
+    num_leds: 12
+    chipset: WS2812
+    rgb_order: GRB
+
 voice_assistant:
   id: korvo_assistant
   microphone: korvo_mic
@@ -163,12 +175,45 @@ voice_assistant:
   noise_suppression_level: 3
   use_wake_word: false     # 先用手动 PTT，后续可换唤醒词
   on_start:
+    - light.turn_on:
+        id: korvo_ring
+        brightness: 80%
+        red: 0%
+        green: 0%
+        blue: 100%
     - logger.log: "开始录音并推送到 Home Assistant 管道"
   on_listening:
+    - light.addressable_set:
+        id: korvo_ring
+        range_from: 0
+        range_to: 11
+        red: 0%
+        green: 100%
+        blue: 0%
     - logger.log: "流式语音 -> STT"
   on_stt_end:
+    - repeat:
+        count: 2
+        then:
+          - light.addressable_set:
+              id: korvo_ring
+              range_from: 0
+              range_to: 11
+              red: 0%
+              green: 100%
+              blue: 100%
+          - delay: 150ms
+          - light.turn_off: korvo_ring
+          - delay: 150ms
     - logger.log: "Home Assistant STT 返回结果"
   on_error:
+    - light.addressable_set:
+        id: korvo_ring
+        range_from: 0
+        range_to: 11
+        red: 100%
+        green: 0%
+        blue: 0%
     - homeassistant.event:
         event: esphome.korvo_voice_error
         data:
@@ -180,6 +225,9 @@ voice_assistant:
         args:
           - message.c_str()
   on_end:
+    - light.turn_off:
+        id: korvo_ring
+        transition_length: 800ms
     - logger.log: "录音完成"
 
 media_player:
