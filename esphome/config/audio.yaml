@@ -3,12 +3,17 @@ esphome:
   friendly_name: Korvo Audio
   name_add_mac_suffix: true
   comment: "ESP32-S3-Korvo-1 语音节点，将音频流送入 Home Assistant 管道"
+  on_boot:
+    then:
+      - delay: 300ms
+      - lambda: |-
+          // Try (re)mount SD after other HW settles
+          id(korvo_sd).setup();
 
 external_components:
   - source:
       type: local
       path: custom_components
-
 esp32:
   cpu_frequency: 240MHz
   board: esp32-s3-devkitc-1
@@ -27,6 +32,21 @@ psram:
   mode: octal
   speed: 80MHz
 
+sd_card:
+  id: korvo_sd
+  clk_pin: 18
+  cmd_pin: 17
+  d0_pin: 16
+  width: 1
+  mount_point: /sdcard
+  max_files: 5
+  format_if_mount_failed: true
+  allocation_unit_kb: 16
+  # Optional power control/tuning (Korvo-1 doesn't expose SD power pin; keep disabled)
+  power_pin: -1
+  power_active_low: false
+  power_on_delay_ms: 100
+  frequency_khz: 26000
 logger:
   hardware_uart: USB_SERIAL_JTAG
   level: INFO
@@ -58,6 +78,16 @@ wifi:
 
 captive_portal:
 
+globals:
+  - id: korvo_mode_idx
+    type: int
+    restore_value: yes
+    initial_value: "0"
+  - id: korvo_buttons_last
+    type: int
+    restore_value: no
+    initial_value: "-1"
+
 time:
   - platform: homeassistant
     id: ha_time
@@ -69,7 +99,7 @@ korvo_audio:
   pa_pin: 38
   # 与 i2s_audio 扬声器的采样率保持一致，避免编解码器与 I2S 时钟不匹配产生底噪
   speaker_sample_rate: 22050
-  speaker_volume:  60
+  speaker_volume:  85
   mic_sample_rate: 16000
   mic_mclk_ratio: 256
   mic_gain: 24DB
@@ -122,7 +152,7 @@ speaker:
   - platform: resampler
     id: media_spk_resampling_input
     output_speaker: media_spk_mixer_input
-    buffer_duration: 250ms
+    buffer_duration: 300ms
     num_channels: 1
     bits_per_sample: 16
     sample_rate: 22050
@@ -142,25 +172,192 @@ speaker:
     buffer_duration: 400ms
 
 # 可以从 HA 面板触发 Push-to-talk
+sensor:
+  - platform: adc
+    id: korvo_buttons_adc
+    pin: GPIO8
+    attenuation: 12db
+    update_interval: 20ms
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    on_value:
+      then:
+        - lambda: |-
+            const float mv = id(korvo_buttons_adc).state * 1000.0f;
+            auto in = [&](float v, float lo, float hi){ return v >= lo && v <= hi; };
+            int key = -1;
+            if      (in(mv, 2310, 2510)) key = 0;  // REC/PTT
+            else if (in(mv, 1880, 2080)) key = 1;  // MODE
+            else if (in(mv, 1560, 1760)) key = 2;  // PLAY
+            else if (in(mv, 1010, 1210)) key = 3;  // SET
+            else if (in(mv,  720,  920)) key = 4;  // VOLDOWN
+            else if (in(mv,  280,  480)) key = 5;  // VOLUP
+            if (key >= 0 && key != id(korvo_buttons_last)) {
+              id(korvo_buttons_last) = key;
+              switch (key) {
+                case 0:
+                  id(korvo_ptt).press();
+                  break;
+                case 4:
+                  id(ha_call_vol_down).execute();
+                  break;
+                case 5:
+                  id(ha_call_vol_up).execute();
+                  break;
+                case 1:
+                  id(ha_mode_cycle).execute();
+                  break;
+                case 2:
+                  id(ha_call_play_pause).execute();
+                  break;
+                case 3:
+                  id(ha_call_stop).execute();
+                  break;
+              }
+            }
+
+script:
+  - id: ha_call_vol_up
+    then:
+      - homeassistant.service:
+          service: media_player.volume_up
+          data:
+            entity_id: media_player.korvo_media
+  - id: ha_call_vol_down
+    then:
+      - homeassistant.service:
+          service: media_player.volume_down
+          data:
+            entity_id: media_player.korvo_media
+  - id: ha_call_play_pause
+    then:
+      - homeassistant.service:
+          service: media_player.media_play_pause
+          data:
+            entity_id: media_player.korvo_media
+  - id: ha_call_stop
+    then:
+      - homeassistant.service:
+          service: media_player.media_stop
+          data:
+            entity_id: media_player.korvo_media
+  - id: ha_mode_cycle
+    then:
+      - lambda: |-
+          int m = id(korvo_mode_idx);
+          m = (m + 1) % 2;  // 0: low-latency, 1: stable
+          id(korvo_mode_idx) = m;
+      - if:
+          condition:
+            lambda: 'return id(korvo_mode_idx) == 0;'
+          then:
+            - light.addressable_set:
+                id: korvo_ring
+                range_from: 0
+                range_to: 11
+                red: 0%
+                green: 0%
+                blue: 100%
+            - homeassistant.event:
+                event: esphome.korvo_profile
+                data:
+                  profile: low_latency
+          else:
+            - light.addressable_set:
+                id: korvo_ring
+                range_from: 0
+                range_to: 11
+                red: 0%
+                green: 100%
+                blue: 0%
+            - homeassistant.event:
+                event: esphome.korvo_profile
+                data:
+                  profile: stable
+  - id: ha_evt_btn_mode
+    then:
+      - homeassistant.event:
+          event: esphome.korvo_button
+          data:
+            key: MODE
+  - id: ha_evt_btn_play
+    then:
+      - homeassistant.event:
+          event: esphome.korvo_button
+          data:
+            key: PLAY
+  - id: ha_evt_btn_set
+    then:
+      - homeassistant.event:
+          event: esphome.korvo_button
+          data:
+            key: SET
+
 button:
+  - platform: template
+    name: "SD Write Test"
+    on_press:
+      - logger.log: "[SD] Write test start"
+      - lambda: |-
+          if (!id(korvo_sd).is_mounted()) {
+            ESP_LOGW("sdtest", "SD not mounted yet - triggering remount and delaying 300ms");
+            id(korvo_sd).setup();
+            esphome::delay(300);
+          }
+      - lambda: |-
+          FILE *f = fopen("/sdcard/esphome_test.txt", "w");
+          if (!f) {
+            ESP_LOGE("sdtest", "open failed - SD not mounted?");
+          } else {
+            const char *msg = "hello from esphome";
+            fwrite(msg, 1, strlen(msg), f);
+            fclose(f);
+            ESP_LOGI("sdtest", "write ok");
+          }
+  - platform: template
+    name: "SD Read Test"
+    on_press:
+      - logger.log: "[SD] Read test start"
+      - lambda: |-
+          if (!id(korvo_sd).is_mounted()) {
+            ESP_LOGW("sdtest", "SD not mounted yet - triggering remount and delaying 300ms");
+            id(korvo_sd).setup();
+            esphome::delay(300);
+          }
+      - lambda: |-
+          FILE *f = fopen("/sdcard/esphome_test.txt", "r");
+          if (!f) {
+            ESP_LOGE("sdtest", "open failed - file missing or SD not mounted");
+          } else {
+            char buf[64] = {0};
+            size_t n = fread(buf, 1, sizeof(buf)-1, f);
+            fclose(f);
+            ESP_LOGI("sdtest", "read %u bytes: %s", (unsigned)n, buf);
+          }
+  - platform: template
+    name: "SD Remount"
+    on_press:
+      - logger.log: "[SD] Remount requested"
+      - lambda: |-
+          id(korvo_sd).setup();
+
   - platform: template
     name: "Speaker Beep Test"
     on_press:
       - speaker.play:
-          # 直接写入 mixer 的公告输入，规避 resampler/I2S 启动瞬态
           id: announcement_spk_mixer_input
-          # 发送 16-bit 单声道，严格对齐 BSP MONO 配置
           data: !lambda |-
             const int sr = 22050;
             const float freq = 1000.0f;
             const int dur_ms = 300;
             const int n = sr * dur_ms / 1000;
             std::vector<uint8_t> out;
-            out.reserve(n * 2);  // 16-bit mono: 2 bytes/frame
+            out.reserve(n * 2);
             for (int i = 0; i < n; i++) {
               float s = sinf(2.0f * 3.1415926f * freq * i / sr);
               int16_t v = (int16_t)(s * 12000);
-              // Mono: [lo, hi]
               out.push_back((uint8_t)(v & 0xFF));
               out.push_back((uint8_t)((v >> 8) & 0xFF));
             }
@@ -171,7 +368,6 @@ button:
     on_press:
       - voice_assistant.start:
           id: korvo_assistant
-
 light:
   - platform: esp32_rmt_led_strip
     id: korvo_ring
@@ -184,7 +380,7 @@ light:
 voice_assistant:
   id: korvo_assistant
   microphone: korvo_mic
-  speaker: korvo_speaker
+  speaker: announcement_spk_resampling_input
   auto_gain: 31dBFS        # Korvo 阵列默认增益
   noise_suppression_level: 3
   use_wake_word: false     # 先用手动 PTT，后续可换唤醒词
