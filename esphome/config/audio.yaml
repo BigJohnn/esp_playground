@@ -5,7 +5,7 @@ esphome:
   comment: "ESP32-S3-Korvo-1 语音节点，将音频流送入 Home Assistant 管道"
   on_boot:
     then:
-      - delay: 300ms
+      - delay: 800ms
       - lambda: |-
           // Try (re)mount SD after other HW settles
           id(korvo_sd).setup();
@@ -39,14 +39,14 @@ sd_card:
   d0_pin: 16
   width: 1
   mount_point: /sdcard
-  max_files: 5
+  max_files: 3
   format_if_mount_failed: true
   allocation_unit_kb: 16
   # Optional power control/tuning (Korvo-1 doesn't expose SD power pin; keep disabled)
   power_pin: -1
   power_active_low: false
   power_on_delay_ms: 100
-  frequency_khz: 26000
+  frequency_khz: 12000
 logger:
   hardware_uart: USB_SERIAL_JTAG
   level: INFO
@@ -307,12 +307,14 @@ button:
             esphome::delay(300);
           }
       - lambda: |-
-          FILE *f = fopen("/sdcard/esphome_test.txt", "w");
+          FILE *f = fopen("/sdcard/test.txt", "w");
           if (!f) {
-            ESP_LOGE("sdtest", "open failed - SD not mounted?");
+            ESP_LOGE("sdtest", "open failed - SD not mounted? errno=%d", (int)errno);
           } else {
             const char *msg = "hello from esphome";
             fwrite(msg, 1, strlen(msg), f);
+            fflush(f);
+            ::fsync(::fileno(f));
             fclose(f);
             ESP_LOGI("sdtest", "write ok");
           }
@@ -327,9 +329,9 @@ button:
             esphome::delay(300);
           }
       - lambda: |-
-          FILE *f = fopen("/sdcard/esphome_test.txt", "r");
+          FILE *f = fopen("/sdcard/test.txt", "r");
           if (!f) {
-            ESP_LOGE("sdtest", "open failed - file missing or SD not mounted");
+            ESP_LOGE("sdtest", "open failed - file missing or SD not mounted (errno=%d)", (int)errno);
           } else {
             char buf[64] = {0};
             size_t n = fread(buf, 1, sizeof(buf)-1, f);
@@ -341,6 +343,8 @@ button:
     on_press:
       - logger.log: "[SD] Remount requested"
       - lambda: |-
+          id(korvo_sd).unmount();
+          esphome::delay(200);
           id(korvo_sd).setup();
 
   - platform: template
