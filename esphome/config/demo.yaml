@@ -1,19 +1,22 @@
+substitutions:
+  name: korvo-demo
+  friendly_name: Korvo Demo
+  timezone: Asia/Shanghai
+
 esphome:
-  name: korvo-audio
-  friendly_name: Korvo Audio
+  name: ${name}
+  friendly_name: ${friendly_name}
+  comment: "Feature-rich demo for ESP32-S3-Korvo-1.1: voice assistant, media, recording, SD, LEDs, HA"
   name_add_mac_suffix: true
-  comment: "ESP32-S3-Korvo-1 语音节点，将音频流送入 Home Assistant 管道"
-  on_boot:
-    then:
-      - delay: 800ms
-      - lambda: |-
-          // Try (re)mount SD after other HW settles
-          id(korvo_sd).setup();
+  project:
+    name: esp_playground.korvo_demo
+    version: "1.1.0"
 
 external_components:
   - source:
       type: local
       path: custom_components
+
 esp32:
   cpu_frequency: 240MHz
   board: esp32-s3-devkitc-1
@@ -24,7 +27,6 @@ esp32:
       CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ: "240"
       CONFIG_FREERTOS_UNICORE: n
       CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "32768"
-      # 语音处理依赖更大的缓存与 PSRAM
       CONFIG_ESP32S3_DATA_CACHE_64KB: y
       CONFIG_ESP32S3_SPIRAM_SUPPORT: y
 
@@ -32,6 +34,54 @@ psram:
   mode: octal
   speed: 80MHz
 
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  level: INFO
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+  services:
+    - service: korvo_diag
+      then:
+        - lambda: |-
+            id(korvo_hw).dump_es8311_diag();
+    - service: korvo_set_bclk_invert
+      variables:
+        invert: bool
+      then:
+        - lambda: |-
+            id(korvo_hw).set_dac_sclk_inverted(invert);
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  manual_ip:
+    static_ip: 192.168.1.42
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
+    dns1: 192.168.1.1
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret ap_fallback_password
+
+web_server:
+  port: 80
+  auth:
+    username: !secret web_user
+    password: !secret web_password
+
+captive_portal:
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+# On-board SD card via 1-bit SDMMC
 sd_card:
   id: korvo_sd
   clk_pin: 18
@@ -42,41 +92,10 @@ sd_card:
   max_files: 3
   format_if_mount_failed: true
   allocation_unit_kb: 16
-  # Optional power control/tuning (Korvo-1 doesn't expose SD power pin; keep disabled)
   power_pin: -1
   power_active_low: false
   power_on_delay_ms: 100
   frequency_khz: 12000
-logger:
-  hardware_uart: USB_SERIAL_JTAG
-  level: INFO
-
-# Home Assistant API/OTA
-api:
-  encryption:
-    key: !secret api_encryption_key
-
-ota:
-  - platform: esphome
-    password: !secret ota_password
-
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  manual_ip:
-    # Set this to the IP of the ESP
-    static_ip: 192.168.1.42
-    # Set this to the IP address of the router. Often ends with .1
-    gateway: 192.168.1.1
-    # The subnet of the network. 255.255.255.0 works for most home networks.
-    subnet: 255.255.255.0
-    # Optional: DNS server
-    dns1: 192.168.1.1
-  ap:
-    ssid: "Korvo Audio Fallback"
-    password: !secret ap_fallback_password
-
-captive_portal:
 
 globals:
   - id: korvo_mode_idx
@@ -87,129 +106,6 @@ globals:
     type: int
     restore_value: no
     initial_value: "-1"
-
-time:
-  - platform: homeassistant
-    id: ha_time
-
-korvo_audio:
-  sda: 1
-  scl: 2
-  i2c_frequency: 400000
-  pa_pin: 38
-  # 与 i2s_audio 扬声器的采样率保持一致，避免编解码器与 I2S 时钟不匹配产生底噪
-  speaker_sample_rate: 22050
-  speaker_volume:  85
-  mic_sample_rate: 16000
-  mic_mclk_ratio: 256
-  mic_gain: 24DB
-  mic_bias: 2V87
-  mic_tdm: true
-
-# 两路 I2S：I2S0 -> ES8311 扬声器, I2S1 -> ES7210 麦阵列（依据 esp-bsp/bsp/esp32_s3_korvo_1/include/bsp/esp32_s3_korvo_1.h）
-i2s_audio:
-  - id: korvo_speaker_bus
-    i2s_mclk_pin: GPIO42
-    i2s_bclk_pin: GPIO40
-    i2s_lrclk_pin: GPIO41
-  - id: korvo_mic_bus
-    i2s_mclk_pin: GPIO20
-    i2s_bclk_pin: GPIO10
-    i2s_lrclk_pin: GPIO9
-
-microphone:
-  - platform: korvo_tdm_mic
-    id: korvo_mic
-
-speaker:
-  - platform: i2s_audio
-    id: korvo_speaker
-    i2s_audio_id: korvo_speaker_bus
-    i2s_dout_pin: GPIO39
-    dac_type: external
-    bits_per_sample: 16bit
-    sample_rate: 22050
-    timeout: 800ms
-  - platform: mixer
-    id: korvo_mixer
-    output_speaker: korvo_speaker
-    source_speakers:
-      # 增大缓冲避免启动与换源时下溢导致的噪声
-      - id: announcement_spk_mixer_input
-        buffer_duration: 350ms
-        timeout: 2s
-      - id: media_spk_mixer_input
-        buffer_duration: 200ms
-        timeout: 2s
-
-  - platform: resampler
-    id: media_spk_resampling_input
-    output_speaker: media_spk_mixer_input
-    buffer_duration: 300ms
-    num_channels: 1
-    bits_per_sample: 16
-    sample_rate: 22050
-    filters: 32
-    taps: 32
-
-  - platform: resampler
-    id: announcement_spk_resampling_input
-    output_speaker: announcement_spk_mixer_input
-    bits_per_sample: 16
-    sample_rate: 22050
-    filters: 32
-    taps: 32
-    # 初始几帧延迟，避免第一包数据过短造成啸叫/咔嗒
-    # 同时作为抖动缓冲，针对 TTS 流适度放大
-    num_channels: 1
-    buffer_duration: 400ms
-
-# 可以从 HA 面板触发 Push-to-talk
-sensor:
-  - platform: adc
-    id: korvo_buttons_adc
-    pin: GPIO8
-    attenuation: 12db
-    update_interval: 20ms
-    filters:
-      - sliding_window_moving_average:
-          window_size: 5
-          send_every: 1
-    on_value:
-      then:
-        - lambda: |-
-            const float mv = id(korvo_buttons_adc).state * 1000.0f;
-            auto in = [&](float v, float lo, float hi){ return v >= lo && v <= hi; };
-            int key = -1;
-            if      (in(mv, 2310, 2510)) key = 0;  // REC/PTT
-            else if (in(mv, 1880, 2080)) key = 1;  // MODE
-            else if (in(mv, 1560, 1760)) key = 2;  // PLAY
-            else if (in(mv, 1010, 1210)) key = 3;  // SET
-            else if (in(mv,  720,  920)) key = 4;  // VOLDOWN
-            else if (in(mv,  280,  480)) key = 5;  // VOLUP
-            if (key >= 0 && key != id(korvo_buttons_last)) {
-              id(korvo_buttons_last) = key;
-              switch (key) {
-                case 0:
-                  id(korvo_ptt).press();
-                  break;
-                case 4:
-                  id(ha_call_vol_down).execute();
-                  break;
-                case 5:
-                  id(ha_call_vol_up).execute();
-                  break;
-                case 1:
-                  id(ha_mode_cycle).execute();
-                  break;
-                case 2:
-                  id(ha_call_play_pause).execute();
-                  break;
-                case 3:
-                  id(ha_call_stop).execute();
-                  break;
-              }
-            }
 
 script:
   - id: ha_call_vol_up
@@ -288,6 +184,171 @@ script:
           data:
             key: SET
 
+# time:
+#   - platform: homeassistant
+#     id: ha_time
+
+# Korvo-1.1 audio front-end (ES8311 + ES7210)
+korvo_audio:
+  id: korvo_hw
+  sda: 1
+  scl: 2
+  i2c_frequency: 400000
+  pa_pin: 38
+  speaker_sample_rate: 22050
+  speaker_volume: 85
+  mic_sample_rate: 16000
+  mic_mclk_ratio: 256
+  mic_gain: 24DB
+  mic_bias: 2V87
+  mic_tdm: true
+
+i2s_audio:
+  - id: korvo_speaker_bus
+    i2s_mclk_pin: GPIO42
+    i2s_bclk_pin: GPIO40
+    i2s_lrclk_pin: GPIO41
+  - id: korvo_mic_bus
+    i2s_mclk_pin: GPIO20
+    i2s_bclk_pin: GPIO10
+    i2s_lrclk_pin: GPIO9
+
+microphone:
+  - platform: korvo_tdm_mic
+    id: korvo_mic
+
+speaker:
+  - platform: i2s_audio
+    id: korvo_speaker
+    i2s_audio_id: korvo_speaker_bus
+    i2s_dout_pin: GPIO39
+    dac_type: external
+    bits_per_sample: 16bit
+    sample_rate: 22050
+    timeout: 800ms
+
+  - platform: mixer
+    id: korvo_mixer
+    output_speaker: korvo_speaker
+    source_speakers:
+      - id: announcement_spk_mixer_input
+        buffer_duration: 350ms
+        timeout: 2s
+      - id: media_spk_mixer_input
+        buffer_duration: 200ms
+        timeout: 2s
+
+  - platform: resampler
+    id: media_spk_resampling_input
+    output_speaker: media_spk_mixer_input
+    buffer_duration: 300ms
+    num_channels: 1
+    bits_per_sample: 16
+    sample_rate: 22050
+    filters: 32
+    taps: 32
+
+  - platform: resampler
+    id: announcement_spk_resampling_input
+    output_speaker: announcement_spk_mixer_input
+    bits_per_sample: 16
+    sample_rate: 22050
+    filters: 32
+    taps: 32
+    num_channels: 1
+    buffer_duration: 400ms
+
+sensor:
+  - platform: adc
+    id: korvo_buttons_adc
+    pin: GPIO8
+    attenuation: 12db
+    update_interval: 20ms
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    on_value:
+      then:
+        - lambda: |-
+            const float mv = id(korvo_buttons_adc).state * 1000.0f;
+            auto in = [&](float v, float lo, float hi){ return v >= lo && v <= hi; };
+            int key = -1;
+            if      (in(mv, 2310, 2510)) key = 0;  // REC/PTT
+            else if (in(mv, 1880, 2080)) key = 1;  // MODE
+            else if (in(mv, 1560, 1760)) key = 2;  // PLAY
+            else if (in(mv, 1010, 1210)) key = 3;  // SET
+            else if (in(mv,  720,  920)) key = 4;  // VOLDOWN
+            else if (in(mv,  280,  480)) key = 5;  // VOLUP
+            if (key >= 0 && key != id(korvo_buttons_last)) {
+              id(korvo_buttons_last) = key;
+              switch (key) {
+                case 0:
+                  id(korvo_ptt).press();
+                  break;
+                case 4:
+                  id(ha_call_vol_down).execute();
+                  break;
+                case 5:
+                  id(ha_call_vol_up).execute();
+                  break;
+                case 1:
+                  id(ha_mode_cycle).execute();
+                  id(ha_evt_btn_mode).execute();
+                  break;
+                case 2:
+                  id(ha_call_play_pause).execute();
+                  id(ha_evt_btn_play).execute();
+                  break;
+                case 3:
+                  id(ha_call_stop).execute();
+                  id(ha_evt_btn_set).execute();
+                  break;
+              }
+            }
+
+  - platform: wifi_signal
+    name: "${friendly_name} WiFi RSSI"
+    id: wifi_rssi
+    update_interval: 30s
+
+  - platform: uptime
+    name: "${friendly_name} Uptime"
+    id: uptime_s
+    update_interval: 60s
+
+text_sensor:
+  - platform: version
+    name: "${friendly_name} ESPHome Version"
+  - platform: wifi_info
+    ip_address:
+      name: "${friendly_name} IP"
+    ssid:
+      name: "${friendly_name} SSID"
+    bssid:
+      name: "${friendly_name} BSSID"
+    mac_address:
+      name: "${friendly_name} MAC"
+  - platform: template
+    name: "${friendly_name} Uptime (Human)"
+    id: uptime_human
+    icon: mdi:clock-start
+    lambda: |-
+      uint32_t seconds = (uint32_t) id(uptime_s).state;
+      char buffer[32];
+      uint32_t days = seconds / 86400;
+      seconds %= 86400;
+      uint8_t hours = seconds / 3600;
+      seconds %= 3600;
+      uint8_t minutes = seconds / 60;
+      uint8_t secs = seconds % 60;
+      if (days) {
+        sprintf(buffer, "%ud %02u:%02u:%02u", days, hours, minutes, secs);
+      } else {
+        sprintf(buffer, "%02u:%02u:%02u", hours, minutes, secs);
+      }
+      return std::string(buffer);
+
 button:
   - platform: template
     name: "SD Write Test"
@@ -365,16 +426,17 @@ button:
     on_press:
       - voice_assistant.start:
           id: korvo_assistant
-  # - platform: template
-  #   name: "Start Recording"
-  #   on_press:
-  #     - lambda: |-
-  #         id(korvo_rec).start_recording();
-  # - platform: template
-  #   name: "Stop Recording"
-  #   on_press:
-  #     - lambda: |-
-  #         id(korvo_rec).stop_recording();
+  - platform: template
+    name: "Start Recording"
+    on_press:
+      - lambda: |-
+          id(korvo_rec).start_recording();
+  - platform: template
+    name: "Stop Recording"
+    on_press:
+      - lambda: |-
+          id(korvo_rec).stop_recording();
+
 light:
   - platform: esp32_rmt_led_strip
     id: korvo_ring
@@ -388,9 +450,9 @@ voice_assistant:
   id: korvo_assistant
   microphone: korvo_mic
   speaker: announcement_spk_resampling_input
-  auto_gain: 31dBFS        # Korvo 阵列默认增益
+  auto_gain: 31dBFS
   noise_suppression_level: 3
-  use_wake_word: false     # 先用手动 PTT，后续可换唤醒词
+  use_wake_word: false
   on_start:
     - light.turn_on:
         id: korvo_ring
@@ -400,7 +462,6 @@ voice_assistant:
         blue: 100%
     - logger.log: "开始录音并推送到 Home Assistant 管道"
     - lambda: |-
-        // 可选：同步开始边录边存，便于诊断
         if (!id(korvo_rec).is_recording()) id(korvo_rec).start_recording();
   on_listening:
     - light.addressable_set:
@@ -449,9 +510,8 @@ voice_assistant:
         id: korvo_ring
         transition_length: 800ms
     - logger.log: "录音完成"
-    # - lambda: |-
-    #     if (id(korvo_rec).is_recording()) id(korvo_rec).stop_recording();
-
+    - lambda: |-
+        if (id(korvo_rec).is_recording()) id(korvo_rec).stop_recording();
 
 media_player:
   - platform: speaker
@@ -464,15 +524,9 @@ media_player:
       speaker: announcement_spk_resampling_input
       num_channels: 1
 
-# custom_component:
-#   - includes:
-#       - custom_components/wav_recorder/wav_recorder.h
-#     lambda: |-
-#       auto rec = new wav_recorder_cc::WavRecorder();
-#       rec->set_mic(&id(korvo_mic));
-#       rec->set_sd(&id(korvo_sd));
-#       rec->set_base_path("/sdcard/rec");
-#       rec->set_max_seconds(120);
-#       return {rec};
-#     components:
-#       - id: korvo_rec
+wav_recorder:
+  id: korvo_rec
+  microphone_id: korvo_mic
+  sdcard_id: korvo_sd
+  base_path: /sdcard/rec
+  max_seconds: 120

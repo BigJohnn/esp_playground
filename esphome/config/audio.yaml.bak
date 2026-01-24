@@ -3,12 +3,6 @@ esphome:
   friendly_name: Korvo Audio
   name_add_mac_suffix: true
   comment: "ESP32-S3-Korvo-1 语音节点，将音频流送入 Home Assistant 管道"
-  on_boot:
-    then:
-      - delay: 800ms
-      - lambda: |-
-          // Try (re)mount SD after other HW settles
-          id(korvo_sd).setup();
 
 external_components:
   - source:
@@ -39,14 +33,9 @@ sd_card:
   d0_pin: 16
   width: 1
   mount_point: /sdcard
-  max_files: 3
+  max_files: 5
   format_if_mount_failed: true
   allocation_unit_kb: 16
-  # Optional power control/tuning (Korvo-1 doesn't expose SD power pin; keep disabled)
-  power_pin: -1
-  power_active_low: false
-  power_on_delay_ms: 100
-  frequency_khz: 12000
 logger:
   hardware_uart: USB_SERIAL_JTAG
   level: INFO
@@ -99,7 +88,7 @@ korvo_audio:
   pa_pin: 38
   # 与 i2s_audio 扬声器的采样率保持一致，避免编解码器与 I2S 时钟不匹配产生底噪
   speaker_sample_rate: 22050
-  speaker_volume:  85
+  speaker_volume:  60
   mic_sample_rate: 16000
   mic_mclk_ratio: 256
   mic_gain: 24DB
@@ -118,8 +107,15 @@ i2s_audio:
     i2s_lrclk_pin: GPIO9
 
 microphone:
-  - platform: korvo_tdm_mic
+  - platform: i2s_audio
     id: korvo_mic
+    i2s_audio_id: korvo_mic_bus
+    i2s_din_pin: GPIO11
+    channel: left
+    sample_rate: 16000
+    bits_per_sample: 16bit
+    pdm: false
+    adc_type: external
 
 speaker:
   - platform: i2s_audio
@@ -294,20 +290,12 @@ button:
     on_press:
       - logger.log: "[SD] Write test start"
       - lambda: |-
-          if (!id(korvo_sd).is_mounted()) {
-            ESP_LOGW("sdtest", "SD not mounted yet - triggering remount and delaying 300ms");
-            id(korvo_sd).setup();
-            esphome::delay(300);
-          }
-      - lambda: |-
-          FILE *f = fopen("/sdcard/test.txt", "w");
+          FILE *f = fopen("/sdcard/esphome_test.txt", "w");
           if (!f) {
-            ESP_LOGE("sdtest", "open failed - SD not mounted? errno=%d", (int)errno);
+            ESP_LOGE("sdtest", "open failed - SD not mounted?");
           } else {
             const char *msg = "hello from esphome";
             fwrite(msg, 1, strlen(msg), f);
-            fflush(f);
-            ::fsync(::fileno(f));
             fclose(f);
             ESP_LOGI("sdtest", "write ok");
           }
@@ -316,30 +304,15 @@ button:
     on_press:
       - logger.log: "[SD] Read test start"
       - lambda: |-
-          if (!id(korvo_sd).is_mounted()) {
-            ESP_LOGW("sdtest", "SD not mounted yet - triggering remount and delaying 300ms");
-            id(korvo_sd).setup();
-            esphome::delay(300);
-          }
-      - lambda: |-
-          FILE *f = fopen("/sdcard/test.txt", "r");
+          FILE *f = fopen("/sdcard/esphome_test.txt", "r");
           if (!f) {
-            ESP_LOGE("sdtest", "open failed - file missing or SD not mounted (errno=%d)", (int)errno);
+            ESP_LOGE("sdtest", "open failed - file missing or SD not mounted");
           } else {
             char buf[64] = {0};
             size_t n = fread(buf, 1, sizeof(buf)-1, f);
             fclose(f);
             ESP_LOGI("sdtest", "read %u bytes: %s", (unsigned)n, buf);
           }
-  - platform: template
-    name: "SD Remount"
-    on_press:
-      - logger.log: "[SD] Remount requested"
-      - lambda: |-
-          id(korvo_sd).unmount();
-          esphome::delay(200);
-          id(korvo_sd).setup();
-
   - platform: template
     name: "Speaker Beep Test"
     on_press:
@@ -365,16 +338,6 @@ button:
     on_press:
       - voice_assistant.start:
           id: korvo_assistant
-  # - platform: template
-  #   name: "Start Recording"
-  #   on_press:
-  #     - lambda: |-
-  #         id(korvo_rec).start_recording();
-  # - platform: template
-  #   name: "Stop Recording"
-  #   on_press:
-  #     - lambda: |-
-  #         id(korvo_rec).stop_recording();
 light:
   - platform: esp32_rmt_led_strip
     id: korvo_ring
@@ -399,9 +362,6 @@ voice_assistant:
         green: 0%
         blue: 100%
     - logger.log: "开始录音并推送到 Home Assistant 管道"
-    - lambda: |-
-        // 可选：同步开始边录边存，便于诊断
-        if (!id(korvo_rec).is_recording()) id(korvo_rec).start_recording();
   on_listening:
     - light.addressable_set:
         id: korvo_ring
@@ -449,8 +409,6 @@ voice_assistant:
         id: korvo_ring
         transition_length: 800ms
     - logger.log: "录音完成"
-    # - lambda: |-
-    #     if (id(korvo_rec).is_recording()) id(korvo_rec).stop_recording();
 
 
 media_player:
@@ -463,16 +421,3 @@ media_player:
     announcement_pipeline:
       speaker: announcement_spk_resampling_input
       num_channels: 1
-
-# custom_component:
-#   - includes:
-#       - custom_components/wav_recorder/wav_recorder.h
-#     lambda: |-
-#       auto rec = new wav_recorder_cc::WavRecorder();
-#       rec->set_mic(&id(korvo_mic));
-#       rec->set_sd(&id(korvo_sd));
-#       rec->set_base_path("/sdcard/rec");
-#       rec->set_max_seconds(120);
-#       return {rec};
-#     components:
-#       - id: korvo_rec

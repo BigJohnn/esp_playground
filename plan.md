@@ -12,7 +12,7 @@
 ## 2. 现状核对（结论）
 - 引脚：I2C/PA/I2S0/I2S1/LRCLK/DOUT 均对齐 BSP，麦克风 DIN=GPIO11 未在 YAML 明确（需添加）。
 - 采样率：Spk=22050Hz，Mic=16000Hz（与 BSP 默认一致）。
-- external_components 指向 custom_components，但当前仓库未见该目录（需确认构建环境）。
+- external_components 指向 custom_components，但当前仓库未见该目录（需确认构建环境）。 #docker-compose.yml将仓库路径映射到container中了。esphome run在container里
 - mixer/resampler 缓冲为 500ms，稳定但时延偏大（可场景化调整）。
 
 ## 3. 立即优化项（迭代 1）
@@ -85,7 +85,7 @@ logger:
 
 ## 4. 功能扩展（迭代 2/3）
 
-1) 环形灯（GPIO19，12 颗 WS2812）：语音状态指示
+1) 环形灯（GPIO19，12 颗 WS2812）：语音状态指示 [完成]
 ```yaml
 light:
   - platform: esp32_rmt_led_strip
@@ -121,7 +121,7 @@ voice_assistant:
         blue: 0%
 ```
 
-2) 6 键 ADC 键盘（GPIO8，共用 ADC1_CH7）：PTT/音量/模式
+2) 6 键 ADC 键盘（GPIO8，共用 ADC1_CH7）：PTT/音量/模式 [完成]
 - 参考 BSP 阈值（可按实测微调 ±80mV）。
 ```yaml
 sensor:
@@ -147,16 +147,10 @@ sensor:
             else if (in(mv,  280,  480)) {/* VOLUP */}
 ```
 
-3) SD 卡（SDMMC 1-bit）：本地录音/日志
-```yaml
-sd_card:
-  id: korvo_sd
-  clk_pin: GPIO18
-  cmd_pin: GPIO17
-  d0_pin: GPIO16
-  powerdown_pin: ""
-  # width: 1 (默认)
-```
+3) SD 卡（SDMMC 1-bit）：本地录音/日志 [已接入，R/W 正常；新增 WAV 录音组件]
+   - 自定义组件 `custom_components/sd_card/`：支持 1-bit、频率上限、内部上拉、防并发 remount，优化 VFS 内存占用
+   - WAV 录音：新增 `custom_components/wav_recorder/`，从自定义 TDM Mic 的 tap 获取 16k/16bit mono PCM，写 `/sdcard/rec/*.wav`
+   - YAML：`wav_recorder:` 块，新增按钮 Start/Stop Recording；语音回调 on_start/on_end 同步启停录音（可按需保留/去除）
 
 4) 多麦 TDM 拓展
 - 在自定义 mic 组件中暴露：通道选择（slot mask）、通道混合/平均、简单波束形成。
@@ -174,11 +168,13 @@ sd_card:
   - Button「Speaker Beep Test」可闻 1kHz/300ms，且无爆音/啸叫。
   - PTT 流程：开始/监听/识别/结束回调日志正确；HA 收到 STT/事件。
   - 麦克风有效输入（含静音环境下低底噪）。
+  - SD：Write/Read 按钮正常；`/sdcard/rec` 下生成 WAV 文件，可在 PC 播放；Remount 按钮可恢复异常。
 - 性能验证：
   - 端到端播报延迟（TTS 触发 -> 可闻）：低时延版 < 600ms；稳定版 < 1s。
   - 连续播报与换源无明显“咔嗒”，I2S 下溢计数为 0。
 - 稳定性：
   - 连续运行 24h 无异常重启；Wi-Fi 抖动下自动恢复正常音频流。
+  - SD：频繁 remount 不触发 `ESP_ERR_NO_MEM`；挂载失败自动退避重试（已在组件侧加防抖），必要时延长 on_boot 挂载延时。
 
 ## 6. 推进计划与分档
 - 迭代 1（本周）：I2S1 DIN 明确化、缓冲降至 300/200ms、音量 70、日志 INFO、组件目录确认。
@@ -217,3 +213,62 @@ sd_card:
 - [ ] 设计 AEC/AGC/NS 管线与开关
 - [ ] 健康监控与自恢复（I2S/Codec 重建、HA 事件）
 - [ ] 建立自动化验证脚本/指标采集
+
+
+好的，SD 已稳定；录音/日志代码也写好。但容器在“读取配置”阶段仍报 NoneType，说明某个组件的 schema 校验在此版本路径返回了 None。为尽快推进，
+  我做了两件事：
+
+  - 已将 wav_recorder 从 Python 域改为 custom_component 方式注册（避免 Python schema 路径差异触发崩溃）。代码仍是 C++ 组件
+    wav_recorder_cc::WavRecorder，按钮和 VA 回调对 id(korvo_rec) 的控制不变。位置：esphome/config/audio.yaml:467 起。
+  - 给 korvo_tdm_mic 的 schema 做了版本兼容处理（存在 audio.set_stream_limits 才调用，没有就降级），避免平台 schema 自身返回 None。
+
+  你现在遇到的 NoneType 仍然存在，接下来用最短路径把问题定位掉（2 步二分）
+
+  请按下面顺序在容器里操作，每一步后都执行一次
+
+  - esphome config /config/audio.yaml（只检查，不 OTA）
+
+  步骤 A（排除录音器集成）
+
+  - 暂时注释 audio.yaml 的 custom_component 这整个块（约 467–475 行）
+  - 同时注释这两处引用它的逻辑：
+      - 按钮 Start/Stop Recording（约 368–377 行）
+      - voice_assistant 回调里两行 lambda（on_start 启录、on_end 停止，约 452–453 行）
+  - 再跑 esphome config
+      - 若此时通过，说明问题在录音器集成这块；我马上给你一版更“傻瓜式”的注册方式（不走 schema，不走 custom_component，直接在现有 sd_card 组件
+        里挂一个小型 recorder 钩子，避免任何 Python 配置参与）。
+      - 若还是报同样错误，继续步骤 B
+
+  步骤 B（排除麦克风平台切换）
+
+  - 暂时把 microphone: 恢复为之前可工作的 i2s_audio 版本（你当前文件里的 120–129 行附近的 i2s_audio 配置还在注释块里，直接改回），保留其它所
+    有配置不变
+  - 再跑 esphome config
+      - 若此时通过，问题出在 korvo_tdm_mic 的 Python 平台加载，我会发一个完全不依赖 Python schema 的“平台内联”版本（把 TDM 驱动以
+        custom_component 形式注册为 Microphone，规避平台路径）
+      - 若仍失败，说明还有第三处 schema 触发（最可能是 sd_card），我会把 sd_card 同样改成 custom_component 挂载，以完全绕开 Python schema 校
+        验
+
+  为什么要这样二分
+
+  - 这个错误是在“读配置”阶段抛出，ESPHome 在这一阶段不会告诉你具体是哪个域返回了 None，只能靠逐块排除。
+  - 录音器改成 custom_component 后，理论上不会再参与 Python schema 校验；如果 A 后仍报错，优先怀疑 korvo_tdm_mic 平台路径（不同版本对 custom
+    平台加载行为有差异）。
+
+  现在你可以选择的两条路（选一个我来改）
+
+  1. 快速上线（优先稳定）：暂时回退为 i2s_audio 麦克风，录音器也先注释掉；确认整个音频/环灯/6键/SD 正常；我离线把两处自定义组件都改成不依赖
+     Python schema 的 custom_component 版本，再推一个可编译运行的补丁。
+  2. 继续保留 korvo_tdm_mic：先按上面 A、B 二分出具体触发点；我针对触发点发最小变更（比如把麦克风平台改成 custom_component 注册、或把录音器改
+     成挂在 sd_card 组件里的 C++ 小钩子）。
+
+  补充
+
+  - 你可以运行 esphome -v config /config/audio.yaml（加 -v）让日志在校验各步骤时输出更多上下文；如果能看到“正在校验的域名/平台名”，也直接贴给
+    我，我能一次性修正对应 schema。
+
+  等你回一条：“选 1/2 + 步骤 A/B 的结果”。我就按你的选择提交相应补丁，确保 OTA 能跑通；然后再把录音/日志恢复（不再依赖 Python schema），功能
+  与现在设计保持一致。
+
+
+  按A操作，Configuration is valid!
