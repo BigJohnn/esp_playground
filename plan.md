@@ -9,14 +9,18 @@
 - 逐步扩展板上外设能力（环形灯、6 键、SD 录音等）。
 - 保留两类配置档：低时延版、稳定版（缓冲更大）。
 
-## 2. 现状核对（结论）
-- 引脚：I2C/PA/I2S0/I2S1/LRCLK/DOUT 均对齐 BSP，麦克风 DIN=GPIO11 未在 YAML 明确（需添加）。
-- 采样率：Spk=22050Hz，Mic=16000Hz（与 BSP 默认一致）。
-- external_components 指向 custom_components，但当前仓库未见该目录（需确认构建环境）。 #docker-compose.yml将仓库路径映射到container中了。esphome run在container里
-- mixer/resampler 缓冲为 500ms，稳定但时延偏大（可场景化调整）。
+## 2. 现状核对（基于 esphome/config）
+- 配置分为 `audio.yaml`（Korvo-1 语音节点），`demo_box3.yaml`/`livingroom.yaml` 面向 ESP32-S3-BOX-3 场景。
+- 引脚：I2C/PA/I2S0/I2S1/LRCLK/DOUT 已在 YAML 对齐 BSP；麦克风 DIN=GPIO11 仍未在 YAML 明确（需补 `i2s_din_pin`）。
+- 采样率：Spk=22050Hz，Mic=16000Hz；I2S/codec/重采样已统一为 22.05kHz。
+- `external_components` 使用本仓库 `custom_components/`（已存在）。
+- 缓冲：mixer 350/200ms，resampler 300/400ms；已低于原 500ms 但仍可进一步调优。
+- SD/LED/按键：`sd_card`、WS2812 环形灯、ADC 6 键均已在 YAML 中启用。
+- 语音链路：`voice_assistant` + `media_player` 已配置，且触发 HA 事件与灯效联动。
+- `audio.yaml` 中 `korvo_rec` 相关调用仍在，但 `custom_component` 录音组件被注释；目前会编译失败或运行时报错，需要统一处理。
 
 ## 3. 立即优化项（迭代 1）
-1) 明确 I2S1 麦克风 DIN 引脚
+1) 明确 I2S1 麦克风 DIN 引脚（仍未落地）
 ```yaml
 microphone:
   - platform: korvo_tdm_mic
@@ -25,7 +29,7 @@ microphone:
     i2s_din_pin: GPIO11   # 与 BSP: BSP_I2S1_DSIN 对齐
 ```
 
-2) 降低整体时延（在稳定与时延之间折中）
+2) 进一步降低整体时延（在稳定与时延之间折中）
 ```yaml
 speaker:
   - platform: mixer
@@ -33,16 +37,16 @@ speaker:
     output_speaker: korvo_speaker
     source_speakers:
       - id: announcement_spk_mixer_input
-        buffer_duration: 300ms   # 500ms -> 300ms
+        buffer_duration: 250ms   # 350ms -> 250ms
         timeout: 2s
       - id: media_spk_mixer_input
-        buffer_duration: 200ms   # 500ms -> 200ms
+        buffer_duration: 180ms
         timeout: 2s
 
   - platform: resampler
     id: announcement_spk_resampling_input
     output_speaker: announcement_spk_mixer_input
-    buffer_duration: 300ms
+    buffer_duration: 250ms
 
   - platform: resampler
     id: media_spk_resampling_input
@@ -50,7 +54,7 @@ speaker:
 ```
 
 3) 功放防爆音与音量管理
-- 建议将 `speaker_volume: 100` 下调到 `70` 左右。
+- 当前 `speaker_volume` 已为 85；如仍有爆音，可下调至 70–80 并观察。
 - 如自定义 `korvo_audio` 支持软启动参数（如 `pa_soft_start_ms`/`pa_soft_stop_ms`），开启软斜坡；否则在播放开始前预填充静音帧。
 ```yaml
 korvo_audio:
@@ -80,8 +84,8 @@ logger:
   level: INFO   # DEBUG -> INFO，生产环境降噪
 ```
 
-5) 组件目录检查
-- 确认构建机存在 `custom_components` 并包含 `korvo_audio`/`korvo_tdm_mic` 等；否则调整 `external_components` 来源或将组件移入本仓库。
+5) 配置一致性检查
+- `audio.yaml` 里禁用 `korvo_rec` 调用，或恢复 `wav_recorder` 组件配置（两者需一致）。
 
 ## 4. 功能扩展（迭代 2/3）
 
@@ -147,10 +151,10 @@ sensor:
             else if (in(mv,  280,  480)) {/* VOLUP */}
 ```
 
-3) SD 卡（SDMMC 1-bit）：本地录音/日志 [已接入，R/W 正常；新增 WAV 录音组件]
+3) SD 卡（SDMMC 1-bit）：本地录音/日志 [已接入；WAV 录音暂未启用]
    - 自定义组件 `custom_components/sd_card/`：支持 1-bit、频率上限、内部上拉、防并发 remount，优化 VFS 内存占用
-   - WAV 录音：新增 `custom_components/wav_recorder/`，从自定义 TDM Mic 的 tap 获取 16k/16bit mono PCM，写 `/sdcard/rec/*.wav`
-   - YAML：`wav_recorder:` 块，新增按钮 Start/Stop Recording；语音回调 on_start/on_end 同步启停录音（可按需保留/去除）
+   - WAV 录音：`custom_components/wav_recorder/` 已在仓库，但 `audio.yaml` 目前未启用。
+   - 语音回调 on_start/on_end 同步启停录音：`audio.yaml` 里仍保留调用，需与组件启用保持一致。
 
 4) 多麦 TDM 拓展
 - 在自定义 mic 组件中暴露：通道选择（slot mask）、通道混合/平均、简单波束形成。
@@ -177,8 +181,8 @@ sensor:
   - SD：频繁 remount 不触发 `ESP_ERR_NO_MEM`；挂载失败自动退避重试（已在组件侧加防抖），必要时延长 on_boot 挂载延时。
 
 ## 6. 推进计划与分档
-- 迭代 1（本周）：I2S1 DIN 明确化、缓冲降至 300/200ms、音量 70、日志 INFO、组件目录确认。
-- 迭代 2（下周）：环形灯、6 键 ADC、SD 卡接入；语音状态联动。
+- 迭代 1（本周）：I2S1 DIN 明确化、缓冲再降一档、音量 70–80 评估、修复 `korvo_rec` 调用一致性。
+- 迭代 2（下周）：完善 HA 事件/按钮映射文档化与示例实体。
 - 迭代 3：TDM 通道选择/波束形成、AEC/AGC/NS、健康监控/自恢复。
 - 双配置档：
   - 低时延版：announcement 200–300ms、media 150–200ms；适合交互优先。
