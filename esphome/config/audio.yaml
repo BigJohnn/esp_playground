@@ -48,7 +48,7 @@ sd_card:
   power_on_delay_ms: 100
   frequency_khz: 12000
 logger:
-  hardware_uart: USB_SERIAL_JTAG
+  hardware_uart: UART0   # Korvo-1 板载 USB-UART 桥接 GPIO43/44
   level: INFO
 
 # Home Assistant API/OTA
@@ -399,9 +399,8 @@ voice_assistant:
         green: 0%
         blue: 100%
     - logger.log: "开始录音并推送到 Home Assistant 管道"
-    - lambda: |-
-        // 可选：同步开始边录边存，便于诊断
-        if (!id(korvo_rec).is_recording()) id(korvo_rec).start_recording();
+    # - lambda: |-
+    #     if (!id(korvo_rec).is_recording()) id(korvo_rec).start_recording();
   on_listening:
     - light.addressable_set:
         id: korvo_ring
