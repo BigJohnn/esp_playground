@@ -1,0 +1,199 @@
+/* ESP32-S31-Function-CoreBoard-1 硬件 bring-up
+ *
+ * 目的：在写任何语音逻辑之前，先用最短的路径证明三件事
+ *   1. I2C 上能扫到 ES8311
+ *   2. 麦克风能采到有效电平（不是一片死寂，也不是削顶）
+ *   3. 采到的音频能原样从喇叭放出来
+ * 三件事都过了，后面的 AFE/WakeNet/推流才有意义。
+ *
+ * 按 BOOT 键触发一次「录 3 秒 -> 回放」。
+ */
+#include <stdbool.h>
+#include <string.h>
+
+#include "audio_hw.h"
+#include "board.h"
+#include "driver/gpio.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "led_strip.h"
+
+static const char *TAG = "main";
+
+#define RECORD_SECONDS 5
+#define RECORD_BYTES   (BOARD_SAMPLE_RATE * RECORD_SECONDS * (BOARD_BITS_PER_SAMPLE / 8) * BOARD_MIC_CHANNELS)
+
+static led_strip_handle_t s_led;
+
+static void led_init(void)
+{
+    led_strip_config_t strip_cfg = {
+        .strip_gpio_num = BOARD_RGB_LED_GPIO,
+        .max_leds = 1,
+        .led_model = LED_MODEL_WS2812,
+        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+    };
+    led_strip_rmt_config_t rmt_cfg = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz = 10 * 1000 * 1000,
+    };
+    if (led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &s_led) != ESP_OK) {
+        ESP_LOGW(TAG, "RGB LED 初始化失败（不致命，继续）");
+        s_led = NULL;
+    }
+}
+
+static void led_set(uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!s_led) {
+        return;
+    }
+    led_strip_set_pixel(s_led, 0, r, g, b);
+    led_strip_refresh(s_led);
+}
+
+/* 采样电平自检：静音时 RMS 应该很小，说话时应该明显抬起来，且不该顶到 32767。 */
+static void report_level_ex(const int16_t *samples, size_t count,
+                            double *out_rms, int16_t *out_peak)
+{
+    int64_t sum_sq = 0;
+    int16_t peak = 0;
+    for (size_t i = 0; i < count; i++) {
+        int16_t v = samples[i];
+        sum_sq += (int64_t)v * v;
+        int16_t a = v < 0 ? (int16_t)-v : v;
+        if (a > peak) {
+            peak = a;
+        }
+    }
+    double rms = count ? __builtin_sqrt((double)sum_sq / (double)count) : 0.0;
+        if (peak < 5) {
+        ESP_LOGW(TAG, "几乎没有信号 —— 麦克风没工作，或者 I2S DIN 引脚接错了");
+    }
+    if (out_rms) {
+        *out_rms = rms;
+    }
+    if (out_peak) {
+        *out_peak = peak;
+    }
+}
+
+/* 增益定标：ES8311 的 PGA 开太大会削顶，开太小信噪比不够。
+ * 目标是"环境噪声下峰值远离满量程、说话时不削顶"，扫一遍实测比查手册靠谱。 */
+static void calibrate_mic_gain(esp_codec_dev_handle_t codec, int16_t *buf, size_t bytes)
+{
+    static const float gains[] = { 0.0f, 6.0f, 12.0f, 18.0f, 24.0f, 30.0f };
+    ESP_LOGI(TAG, "--- 麦克风增益扫描（保持安静，测底噪）---");
+    for (size_t i = 0; i < sizeof(gains) / sizeof(gains[0]); i++) {
+        audio_hw_set_mic_gain(codec, gains[i]);
+        vTaskDelay(pdMS_TO_TICKS(120));
+        /* 丢掉切档后的第一批样本，避免测到瞬态 */
+        esp_codec_dev_read(codec, buf, bytes);
+        double rms = 0.0;
+        int16_t peak = 0;
+        if (esp_codec_dev_read(codec, buf, bytes) == ESP_OK) {
+            report_level_ex(buf, bytes / sizeof(int16_t), &rms, &peak);
+        }
+        ESP_LOGI(TAG, "增益 %4.1f dB -> RMS=%8.1f  峰值=%6d%s",
+                 gains[i], rms, peak, peak >= 32000 ? "   <<< 削顶" : "");
+    }
+    ESP_LOGI(TAG, "--- 扫描结束 ---");
+}
+
+void app_main(void)
+{
+    led_init();
+    led_set(0, 0, 32);   /* 蓝：启动中 */
+
+    ESP_LOGI(TAG, "=== ESP32-S31 音频 bring-up ===");
+
+    if (audio_hw_i2c_scan() != ESP_OK) {
+        led_set(32, 0, 0);
+        return;
+    }
+
+    esp_codec_dev_handle_t codec = NULL;
+    if (audio_hw_init(&codec) != ESP_OK) {
+        ESP_LOGE(TAG, "音频初始化失败");
+        led_set(32, 0, 0);
+        return;
+    }
+    audio_hw_set_volume(codec, 70);
+    audio_hw_set_mic_gain(codec, 30.0f);
+
+    /* 3 秒 16k/16bit 单声道 = 96KB，内部 RAM 放得下，但板上有 16MB PSRAM，优先用它。 */
+    int16_t *buf = heap_caps_malloc(RECORD_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) {
+        buf = heap_caps_malloc(RECORD_BYTES, MALLOC_CAP_8BIT);
+    }
+    if (!buf) {
+        ESP_LOGE(TAG, "分配 %d 字节失败", RECORD_BYTES);
+        led_set(32, 0, 0);
+        return;
+    }
+
+    gpio_config_t btn = {
+        .pin_bit_mask = 1ULL << BOARD_BOOT_BTN_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    gpio_config(&btn);
+
+    led_set(0, 32, 0);   /* 绿：就绪 */
+    ESP_LOGI(TAG, "就绪。开机先自动跑一轮，之后按 BOOT 键可重复。");
+
+    /* 0.5 秒一段做增益扫描 */
+    calibrate_mic_gain(codec, buf, BOARD_SAMPLE_RATE * (BOARD_BITS_PER_SAMPLE / 8) / 2);
+    audio_hw_set_mic_gain(codec, 24.0f);   /* 扫描实测：24dB 底噪 peak≈130，余量充足 */
+
+    /* 首轮自动跑：没人在板子旁边时也能验证麦克风通路 */
+    bool auto_first = true;
+
+    while (1) {
+        if (!auto_first) {
+            if (gpio_get_level(BOARD_BOOT_BTN_GPIO) != 0) {
+                vTaskDelay(pdMS_TO_TICKS(30));
+                continue;
+            }
+            /* 消抖 + 等松手，避免一次按键触发多轮 */
+            vTaskDelay(pdMS_TO_TICKS(50));
+            while (gpio_get_level(BOARD_BOOT_BTN_GPIO) == 0) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+            }
+        }
+        auto_first = false;
+
+        led_set(32, 16, 0);   /* 橙：录音 */
+        ESP_LOGI(TAG, "录音中 —— 现在对着板子说话");
+        memset(buf, 0, RECORD_BYTES);
+        const size_t sec_bytes = BOARD_SAMPLE_RATE * (BOARD_BITS_PER_SAMPLE / 8);
+        esp_err_t err = ESP_OK;
+        for (int sec = 0; sec < RECORD_SECONDS && err == ESP_OK; sec++) {
+            err = esp_codec_dev_read(codec, (uint8_t *)buf + sec * sec_bytes, sec_bytes);
+            double rms = 0.0;
+            int16_t peak = 0;
+            report_level_ex((int16_t *)((uint8_t *)buf + sec * sec_bytes),
+                            sec_bytes / sizeof(int16_t), &rms, &peak);
+            ESP_LOGI(TAG, "  第 %d 秒: RMS=%7.1f  峰值=%6d%s",
+                     sec + 1, rms, peak,
+                     peak >= 32000 ? "  <<< 削顶" : (peak > 2000 ? "  <- 有说话" : ""));
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "读取失败: %s", esp_err_to_name(err));
+            led_set(32, 0, 0);
+            continue;
+        }
+
+        led_set(0, 0, 32);    /* 蓝：回放 */
+        ESP_LOGI(TAG, "回放中 …");
+        err = esp_codec_dev_write(codec, buf, RECORD_BYTES);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "播放失败: %s", esp_err_to_name(err));
+        }
+
+        led_set(0, 32, 0);
+        ESP_LOGI(TAG, "完成，可以再按一次。");
+    }
+}

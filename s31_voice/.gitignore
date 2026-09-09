@@ -1,0 +1,10 @@
+server/.venv/
+server/.env
+server/__pycache__/
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/dependencies.lock
+*.pyc
+firmware/sdkconfig.secret

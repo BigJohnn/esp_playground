@@ -1,0 +1,10 @@
+# esp-sr 的模型（唤醒词 + 命令词）不进 app，单独放一个 model 分区，
+# 由 esp-sr 的 CMake 打包成 srmodels.bin 并跟着 idf.py flash 一起烧。
+# 分区必须叫 "model"，名字是 esp-sr/CMakeLists.txt 里写死的。
+#
+# 实测占用：wn9_nihaoxiaozhi_tts 0.28MB + mn7_cn 2.55MB ≈ 2.9MB，给到 4MB 留余量。
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x6000,
+phy_init,   data, phy,      0xf000,   0x1000,
+factory,    app,  factory,  0x10000,  4M,
+model,      data, spiffs,   ,         4M,

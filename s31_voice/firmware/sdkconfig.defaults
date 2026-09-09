@@ -1,0 +1,37 @@
+# 日志走板载 USB-UART 桥（Type-C UART 口），不是 USB-Serial/JTAG 口
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# 板上是 16MB PSRAM，语音缓冲全靠它
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_320=y
+
+# ---- 分区表：esp-sr 的模型要单独一块 "model" 分区 ----
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ---- esp-sr ----
+# 唤醒词：你好小智。选它是因为四音节、区分度高，且不跟屋里的米家设备抢唤醒词。
+CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y
+# 中文命令词：mn7_cn 是 esp32s31 上唯一可用的中文 MultiNet（S3 才有 mn5/mn6）
+CONFIG_SR_MN_CN_MULTINET7_QUANT=y
+CONFIG_SR_MN_EN_NONE=y
+# VAD 用神经网络那个：单麦没有波束形成可用，能不能把人声从底噪里判出来全靠它，
+# 而且它的 992ms 迟滞正是兜底路径端点检测的依据（见 sr.c）。
+CONFIG_SR_VADN_VADNET1_MEDIUM=y
+# 降噪保持 WebRTC（纯代码，不占 flash）。nsnet2 的模型有 340KB，但
+# AFE_TYPE_SR 下我们 se_init=false，降噪根本没进流水线 —— 白占。
+# 真要开降噪（远场/嘈杂环境实测之后如果需要），把下面这行放开、se_init 改 true。
+# CONFIG_SR_NSN_NSNET2=y
+CONFIG_SR_NSN_WEBRTC=y
+CONFIG_MODEL_IN_FLASH=y
+
+# ---- 网络 ----
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
+CONFIG_LWIP_SO_RCVBUF=y
+
+# AFE 的两条任务吃 CPU，主任务栈也要够大（要跑 HTTP + cJSON）
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

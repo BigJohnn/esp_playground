@@ -1,0 +1,59 @@
+menu "S31 Voice"
+
+config S31_WIFI_SSID
+    string "Wi-Fi SSID"
+    default ""
+    help
+        留空则不连 Wi-Fi，只跑离线识别（识别结果只打日志，不控灯）。
+        真实凭据写在 sdkconfig.secret 里，那个文件不进仓库。
+
+config S31_WIFI_PASSWORD
+    string "Wi-Fi 密码"
+    default ""
+
+config S31_SERVER_HOST
+    string "服务端地址（发现失败时的兜底）"
+    default ""
+    help
+        正常情况下板子用 UDP 广播自己找服务端，这里留空即可。
+        只有在广播被网络拦掉时才需要写死。
+
+config S31_API_TOKEN
+    string "服务端共享令牌"
+    default ""
+    help
+        要和 server/.env 里的 API_TOKEN 一致。除 /health 外每个请求都会带
+        Authorization: Bearer <这个值>。留空 = 不带（服务端也留空才通）。
+        真实值写在 sdkconfig.secret 里，那个文件不进仓库。
+
+config S31_COMMANDS_POLL_S
+    int "命令词表轮询间隔（秒，0=不轮询）"
+    default 60
+    help
+        每隔这么久问一次 /commands/version（几十字节）。版本变了才去拉整张表，
+        然后在板上原地重建 MultiNet 的词图 —— 改一条命令词不用重启板子。
+
+config S31_SERVER_PORT
+    int "服务端端口"
+    default 8790
+
+config S31_MIC_GAIN_DB
+    int "麦克风 PGA 增益 (dB)"
+    default 24
+    help
+        M2 增益扫描实测：24dB 下安静房间底噪峰值约 130，距满量程还有约 48dB 余量。
+
+config S31_HAS_SPEAKER
+    bool "板子上接了喇叭"
+    default n
+    help
+        Speaker Output Port（背面 J9，1.25mm 2pin）出厂不带喇叭，要自己接
+        一只 4Ω/3W 的。没接的时候关掉这一项：板子不会再去服务端取 TTS 音频，
+        省掉开机播报的 3.5 秒和每次兜底的 1.5 秒 —— 那些音频反正没人听得见。
+        接上之后打开，回话就自动恢复，代码不用动。
+
+config S31_COMMAND_TIMEOUT_MS
+    int "唤醒后等命令词的时间 (ms)"
+    default 6000
+
+endmenu

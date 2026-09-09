@@ -1,0 +1,3 @@
+# 模型权重不进仓库（312MB）。拉取见 tools/fetch_tts_model.sh
+*
+!.gitignore
