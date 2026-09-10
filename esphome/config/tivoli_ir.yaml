@@ -39,3 +39,14 @@ remote_transmitter:
   pin: GPIO4
   carrier_duty_percent: 50%
   non_blocking: true
+
+button:
+  - platform: template
+    name: "Tivoli Power Test"
+    id: tivoli_power_test
+    # Four matching captures from the original remote, 2026-09-09.
+    on_press:
+      - remote_transmitter.transmit_nec:
+          address: 0x6B86
+          command: 0xED12
+          command_repeats: 1
