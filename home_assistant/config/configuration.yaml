@@ -9,6 +9,18 @@ automation: !include automations.yaml
 script: !include scripts.yaml
 scene: !include scenes.yaml
 
+# Keep the existing UI-managed dashboards, add a YAML-managed one for the
+# Tivoli remote so its layout stays in version control.
+lovelace:
+  mode: storage
+  dashboards:
+    tivoli-remote:
+      mode: yaml
+      title: Tivoli 遥控
+      icon: mdi:remote
+      show_in_sidebar: true
+      filename: dashboards/tivoli_remote.yaml
+
 sensor:
   # 股票价格（使用 HACS 安装的 yahoofinance 集成，快手 HK1024）
   - platform: yahoofinance

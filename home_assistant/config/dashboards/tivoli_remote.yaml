@@ -1,0 +1,221 @@
+# Tivoli Audio IR remote - layout mirrors the physical remote.
+# Codes captured from the original remote; see esphome/config/tivoli_ir.yaml
+views:
+- title: Tivoli
+  path: tivoli
+  icon: mdi:remote
+  cards:
+  - type: markdown
+    content: '## Tivoli Audio
+
+      按键布局与原厂遥控器一致'
+  - type: vertical-stack
+    cards:
+    - type: horizontal-stack
+      cards:
+      - type: button
+        entity: button.tivoli_ir_mute
+        name: 静音
+        icon: mdi:volume-mute
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_mute
+      - type: button
+        entity: button.tivoli_ir_power
+        name: 电源
+        icon: mdi:power
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_power
+    - type: horizontal-stack
+      cards:
+      - type: button
+        entity: button.tivoli_ir_alarm
+        name: 闹钟
+        icon: mdi:alarm
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_alarm
+      - type: button
+        entity: button.tivoli_ir_sleep
+        name: 睡眠
+        icon: mdi:power-sleep
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_sleep
+      - type: button
+        entity: button.tivoli_ir_source
+        name: 音源
+        icon: mdi:import
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_source
+    - type: horizontal-stack
+      cards:
+      - type: button
+        entity: button.tivoli_ir_up
+        name: ''
+        icon: mdi:chevron-up
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_up
+    - type: horizontal-stack
+      cards:
+      - type: button
+        entity: button.tivoli_ir_left
+        name: ''
+        icon: mdi:chevron-left
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_left
+      - type: button
+        entity: button.tivoli_ir_select
+        name: SELECT
+        icon: mdi:circle-outline
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_select
+      - type: button
+        entity: button.tivoli_ir_right
+        name: ''
+        icon: mdi:chevron-right
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_right
+    - type: horizontal-stack
+      cards:
+      - type: button
+        entity: button.tivoli_ir_down
+        name: ''
+        icon: mdi:chevron-down
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_down
+    - type: horizontal-stack
+      cards:
+      - type: vertical-stack
+        cards:
+        - type: button
+          entity: button.tivoli_ir_volume_up
+          name: 音量 +
+          icon: mdi:volume-plus
+          show_state: false
+          tap_action:
+            action: perform-action
+            perform_action: button.press
+            target:
+              entity_id: button.tivoli_ir_volume_up
+        - type: button
+          entity: button.tivoli_ir_volume_down
+          name: 音量 −
+          icon: mdi:volume-minus
+          show_state: false
+          tap_action:
+            action: perform-action
+            perform_action: button.press
+            target:
+              entity_id: button.tivoli_ir_volume_down
+      - type: button
+        entity: button.tivoli_ir_settings
+        name: 设置
+        icon: mdi:cog
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_settings
+    - type: horizontal-stack
+      cards:
+      - type: button
+        entity: button.tivoli_ir_preset_1
+        name: '1'
+        icon: mdi:numeric-1-box-outline
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_preset_1
+      - type: button
+        entity: button.tivoli_ir_preset_2
+        name: '2'
+        icon: mdi:numeric-2-box-outline
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_preset_2
+      - type: button
+        entity: button.tivoli_ir_preset_3
+        name: '3'
+        icon: mdi:numeric-3-box-outline
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_preset_3
+    - type: horizontal-stack
+      cards:
+      - type: button
+        entity: button.tivoli_ir_preset_4
+        name: '4'
+        icon: mdi:numeric-4-box-outline
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_preset_4
+      - type: button
+        entity: button.tivoli_ir_preset_5
+        name: '5'
+        icon: mdi:numeric-5-box-outline
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_preset_5
+      - type: button
+        entity: button.tivoli_ir_preset_6
+        name: '6'
+        icon: mdi:numeric-6-box-outline
+        show_state: false
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.tivoli_ir_preset_6
