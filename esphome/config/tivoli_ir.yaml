@@ -21,7 +21,7 @@ wifi:
   ssid: "okk303kko"
   password: !secret tivoli_wifi_password
 
-# Candidate pinout for the ESP32E-N4 IR board; verify with the real remote.
+# RX and TX verified with Tivoli Power; GPIO21 is held HIGH.
 switch:
   - platform: gpio
     pin: GPIO21
@@ -40,13 +40,188 @@ remote_transmitter:
   carrier_duty_percent: 50%
   non_blocking: true
 
-button:
-  - platform: template
-    name: "Tivoli Power Test"
-    id: tivoli_power_test
-    # Four matching captures from the original remote, 2026-09-09.
-    on_press:
+
+# All commands share NEC address 0x6B86. Captured from the original
+# Tivoli Audio remote 2026-09-09..2026-09-10; every command byte pair
+# passes the NEC low = ~high checksum.
+script:
+  - id: send_ir
+    parameters:
+      cmd: int
+    then:
       - remote_transmitter.transmit_nec:
           address: 0x6B86
-          command: 0xED12
+          command: !lambda return cmd;
           command_repeats: 1
+
+button:
+  - platform: template
+    name: "Power"
+    id: btn_power
+    icon: mdi:power
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xED12
+
+  - platform: template
+    name: "Source"
+    id: btn_source
+    icon: mdi:import
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xF30C
+
+  - platform: template
+    name: "Mute"
+    id: btn_mute
+    icon: mdi:volume-mute
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xFA05
+
+  - platform: template
+    name: "Alarm"
+    id: btn_alarm
+    icon: mdi:alarm
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xE718
+
+  - platform: template
+    name: "Sleep"
+    id: btn_sleep
+    icon: mdi:power-sleep
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xE31C
+
+  - platform: template
+    name: "Up"
+    id: btn_up
+    icon: mdi:chevron-up
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xE817
+
+  - platform: template
+    name: "Down"
+    id: btn_down
+    icon: mdi:chevron-down
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xAD52
+
+  - platform: template
+    name: "Left"
+    id: btn_left
+    icon: mdi:chevron-left
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xBD42
+
+  - platform: template
+    name: "Right"
+    id: btn_right
+    icon: mdi:chevron-right
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xBE41
+
+  - platform: template
+    name: "Select"
+    id: btn_select
+    icon: mdi:circle-outline
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xEA15
+
+  - platform: template
+    name: "Volume Up"
+    id: btn_volume_up
+    icon: mdi:volume-plus
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xFF00
+
+  - platform: template
+    name: "Volume Down"
+    id: btn_volume_down
+    icon: mdi:volume-minus
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xBA45
+
+  - platform: template
+    name: "Settings"
+    id: btn_settings
+    icon: mdi:cog
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xAB54
+
+  - platform: template
+    name: "Preset 1"
+    id: btn_preset_1
+    icon: mdi:numeric-1-box-outline
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xF708
+
+  - platform: template
+    name: "Preset 2"
+    id: btn_preset_2
+    icon: mdi:numeric-2-box-outline
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xF00F
+
+  - platform: template
+    name: "Preset 3"
+    id: btn_preset_3
+    icon: mdi:numeric-3-box-outline
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xF10E
+
+  - platform: template
+    name: "Preset 4"
+    id: btn_preset_4
+    icon: mdi:numeric-4-box-outline
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xF609
+
+  - platform: template
+    name: "Preset 5"
+    id: btn_preset_5
+    icon: mdi:numeric-5-box-outline
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xEC13
+
+  - platform: template
+    name: "Preset 6"
+    id: btn_preset_6
+    icon: mdi:numeric-6-box-outline
+    on_press:
+      - script.execute:
+          id: send_ir
+          cmd: 0xE01F
