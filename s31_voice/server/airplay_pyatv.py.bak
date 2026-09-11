@@ -1,0 +1,231 @@
+"""RAOP（AirPlay 2）推流，以及整套方案赖以成立的**锚定原语**。
+
+为什么这个文件是地基：Tivoli 的红外是彻底开环的，而且语义比"开环"还糟 ——
+POWER 是 toggle（按之前不知道它开着还是关着），SOURCE 是 cycle（按之前不知道停在哪一档）。
+没有任何一条红外指令能告诉我们按完之后设备处在什么状态。
+
+而一次成功的 RAOP 推流同时证明三件事：
+    1. 设备是开着的（关机状态接不了 RTSP）
+    2. 源停在 WiFi 上（推流成功意味着它在放我们的流）
+    3. 网络是通的
+于是"锚定"把开环的红外链重新归零：锚定成功之后，SOURCE 按 k 次必然落到 FM，
+k 是循环里的一个常数，量一次永远成立。
+
+反过来也成立，而且是白捡的：按完 POWER 之后**锚定失败**，就是关机成功的证据。
+这是我们能拿到的唯一一个"设备真的关掉了"的确认。
+
+推的是 0.4 秒静音 —— 听不见，但 RTSP 那一整套握手/SETUP/RECORD 全都真实发生过。
+"""
+from __future__ import annotations
+
+import asyncio
+import io
+import logging
+import time
+import wave
+
+_LOG = logging.getLogger("airplay")
+
+# 锚定用的静音有多长。太短设备可能来不及切源，太长每条命令都要多等。
+# 0.4s 是"够走完一次完整 RTSP 会话"和"用户感觉不到"之间的一个起点，M6 会量。
+_ANCHOR_SECONDS = 0.4
+_ANCHOR_RATE = 44100     # RAOP 原生就是 44.1k/16bit/立体声，按它来省一次重采样
+
+
+def _silence_wav(seconds: float = _ANCHOR_SECONDS, rate: int = _ANCHOR_RATE) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00" * (int(rate * seconds) * 4))
+    return buf.getvalue()
+
+
+_SILENCE = _silence_wav()
+
+
+class AirPlayError(RuntimeError):
+    pass
+
+
+class AirPlay:
+    """一台 RAOP 接收端。线程不安全，但整个服务端只有一个事件循环，够用。
+
+    连接是**有状态且昂贵**的（一次 RTSP 握手 + 加密协商），所以放着一个连接复用；
+    但也不能永远开着 —— 连着的时候设备就锁在 WiFi 源上，用户拿实体遥控器切到 FM
+    会被我们抢回来。所以播完 idle_close_s 秒就主动断开。
+    """
+
+    def __init__(self, host: str | None = None, name: str | None = None,
+                 password: str | None = None, idle_close_s: float = 20.0) -> None:
+        self.host = host or None
+        self.name = name or None
+        self.password = password or None
+        self.idle_close_s = idle_close_s
+        self._conf = None
+        self._atv = None
+        # 这把锁只保护**建连接**，不保护推流。
+        # 早先它罩住整个 stream_file，结果一首歌放着的三四分钟里，
+        # "声音大一点"和锚定全都排在后面干等 —— 而这两件事恰恰最该在放歌时能用。
+        self._lock = asyncio.Lock()
+        self._idle_task: asyncio.Task | None = None
+        self._last_ok: float | None = None
+        self._last_full_scan: float = 0.0
+
+    # ---------- 发现 / 连接 ----------
+
+    async def _resolve(self, force: bool = False):
+        """找到设备。优先按 IP 定点扫，扫不到再按名字全网扫。
+
+        不写死 IP 是 s31_voice 一贯的做法（README §4.1.12 记过一次教训：
+        写死之后代理的 TUN 把路由劫走，整条链哑掉且报错毫无指向性）。
+        但 host 给了就先试它 —— 定点扫 1 秒，全网扫要 5 秒以上。
+        """
+        if self._conf is not None and not force:
+            return self._conf
+        import pyatv
+        from pyatv.const import Protocol
+
+        loop = asyncio.get_running_loop()
+        found = []
+        if self.host:
+            found = await pyatv.scan(loop, hosts=[self.host], timeout=3)
+        # 全网扫要 6 秒，而设备**关着的时候**这 6 秒是注定白花的 ——
+        # 它扫不到，因为本来就没开。而"设备关着"恰恰是最常见的锚定失败原因。
+        # 所以配了 host 的话，全网扫降级成一分钟一次的兜底，专门用来发现"换 IP 了"。
+        if not found and (not self.host or time.time() - self._last_full_scan > 60):
+            self._last_full_scan = time.time()
+            all_devs = await pyatv.scan(loop, timeout=6)
+            found = [c for c in all_devs
+                     if c.get_service(Protocol.RAOP) is not None
+                     and (not self.name or self.name.lower() in str(c.name).lower())]
+        if not found:
+            raise AirPlayError("网络上没找到这台 AirPlay 设备")
+
+        conf = found[0]
+        svc = conf.get_service(Protocol.RAOP)
+        if svc is None:
+            raise AirPlayError(f"{conf.name} 不提供 RAOP")
+        if self.password:
+            svc.password = self.password
+        self._conf = conf
+        self.host = str(conf.address)
+        return conf
+
+    async def _connect(self):
+        if self._atv is not None:
+            return self._atv
+        import pyatv
+        from pyatv.const import Protocol
+
+        conf = await self._resolve()
+        loop = asyncio.get_running_loop()
+        try:
+            self._atv = await pyatv.connect(conf, loop, protocol=Protocol.RAOP)
+        except Exception:
+            # 设备重新配网/换了 IP 之后，缓存的 conf 是过期的。重扫一次再试，
+            # 只重试这一次 —— 再失败就是真的连不上，不该在关键路径上继续磨。
+            self._conf = None
+            conf = await self._resolve(force=True)
+            self._atv = await pyatv.connect(conf, loop, protocol=Protocol.RAOP)
+        return self._atv
+
+    async def close(self) -> None:
+        atv, self._atv = self._atv, None
+        if atv is not None:
+            try:
+                atv.close()
+            except Exception:  # noqa: BLE001 - 关连接失败不值得往上抛
+                pass
+
+    def _touch_idle(self) -> None:
+        if self._idle_task is not None:
+            self._idle_task.cancel()
+        self._idle_task = asyncio.create_task(self._idle_close())
+
+    async def _idle_close(self) -> None:
+        try:
+            await asyncio.sleep(self.idle_close_s)
+        except asyncio.CancelledError:
+            return
+        await self.close()
+
+    # ---------- 原语 ----------
+
+    async def anchor(self, timeout: float = 8.0) -> bool:
+        """推一段静音。返回 True = 设备开着、停在 WiFi 源、网络通。
+
+        这是整个系统里唯一一个**既能发又能验**的动作。失败不抛异常 ——
+        失败本身就是有效信息（"设备是关着的"），调用方要拿它做判断，不是处理错误。
+        """
+        t0 = time.perf_counter()
+        try:
+            # timeout 罩住**整个**动作，不只是推流那一段。发现和连接同样会卡住，
+            # 而且卡的时候更久（一次全网扫就是 6 秒）—— 只罩推流的话，
+            # 这个"硬超时"在最需要它的场景里恰好不起作用。
+            await asyncio.wait_for(self._anchor_once(), timeout=timeout)
+        except Exception as exc:  # noqa: BLE001
+            _LOG.info("锚定失败（%.0fms）：%s —— 设备大概率是关着的或掉网了",
+                      (time.perf_counter() - t0) * 1000, exc)
+            await self.close()
+            return False
+        self._last_ok = time.time()
+        self._touch_idle()
+        _LOG.info("锚定成功（%.0fms）—— 设备开着、在 WiFi 源上",
+                  (time.perf_counter() - t0) * 1000)
+        return True
+
+    async def _anchor_once(self) -> None:
+        async with self._lock:
+            atv = await self._connect()
+        await atv.stream.stream_file(io.BytesIO(_SILENCE))
+
+    @property
+    def last_anchor(self) -> float | None:
+        """上一次锚定成功的时间戳。影子状态的可信度全挂在它身上。"""
+        return self._last_ok
+
+    async def stream(self, source, metadata=None, volume: float | None = None) -> None:
+        """把一首歌推过去。**会一直阻塞到放完**，所以调用方必须放进 task 里。
+
+        source 可以是本地文件路径，也可以是 BytesIO —— 我们走文件，
+        因为网易云的直链是有时效的：先整首下下来，播的过程中链接过不过期都不再相干。
+        """
+        async with self._lock:
+            atv = await self._connect()
+        if volume is not None:
+            try:
+                await atv.audio.set_volume(max(0.0, min(100.0, volume)))
+            except Exception as exc:  # noqa: BLE001 - 音量设不上不该毁掉这次播放
+                _LOG.warning("设音量失败：%s", exc)
+        try:
+            await atv.stream.stream_file(source, metadata=metadata)
+        finally:
+            self._last_ok = time.time()
+            self._touch_idle()
+
+    async def set_volume(self, pct: float) -> bool:
+        """绝对音量。
+
+        这条比红外的 VOL± 好得多：红外是相对的、开环的，按了几次全靠记账，
+        而记账一定会跟实体遥控器的操作对不上。这里给的是绝对值，说 40 就是 40。
+        只在 WiFi 源上有效 —— FM 模式下设备根本没在听我们的流。
+        """
+        try:
+            async with self._lock:
+                atv = await self._connect()
+            await atv.audio.set_volume(max(0.0, min(100.0, pct)))
+            self._touch_idle()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("设音量失败：%s", exc)
+            return False
+
+    async def volume(self) -> float | None:
+        try:
+            async with self._lock:
+                atv = await self._connect()
+            return float(atv.audio.volume)
+        except Exception:  # noqa: BLE001
+            return None
