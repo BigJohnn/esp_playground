@@ -1,4 +1,6 @@
-"""把 Intent 落到实际的灯上。
+"""把 Intent 落到实际设备上：灯的执行器，以及三台设备的分发器（Router）。
+
+灯的部分（LightExecutor）
 
 两条路径，优先本地：
   1. miIO 局域网直连  —— 实测 ~300ms，不依赖外网、不受 Docker 网络模式影响
@@ -14,6 +16,7 @@ import logging
 
 from config import CONFIG
 from ha import HomeAssistant
+import intent as intent_mod
 from intent import Intent
 
 _LOG = logging.getLogger("exec")
@@ -135,3 +138,65 @@ class LightExecutor:
         if await self._run_local(intent):
             return True, intent.reply
         return await self._run_ha(intent)
+
+
+# ---------------------------------------------------------------------------
+# 设备注册表
+#
+# 从"只有一盏灯"扩到三台设备之后，多出来的两件事都不属于任何单个执行器：
+#   1. 泛化词消歧 —— "关掉"是关灯还是关音响，得记着上一次操作的是谁
+#   2. 第三层兜底 —— 规则和拼音都没中的时候才问本地 LLM，而且带硬超时
+# 所以有了 Router。它不碰任何硬件，只做分发和这两件事。
+# ---------------------------------------------------------------------------
+
+class Router:
+    def __init__(self, light: "LightExecutor", tivoli=None, music=None, llm=None) -> None:
+        self.light = light
+        self.tivoli = tivoli
+        self.music = music
+        self.llm = llm
+        # 上一次**成功**操作的设备。失败的不算 —— 一条没执行成的命令不该改变
+        # 后面那句"关掉"的含义。
+        self.last_domain: str | None = None
+
+    def _for(self, domain: str):
+        return {"light": self.light, "tivoli": self.tivoli, "music": self.music}.get(domain)
+
+    async def parse_and_execute(self, text: str) -> tuple[Intent, bool, str]:
+        """一句话进来，走完三层意图 + 执行。返回 (最终意图, 是否执行了, 回话)。"""
+        parsed = intent_mod.parse(text, self.last_domain)
+
+        if parsed.domain == "none" and self.llm is not None:
+            # 规则层和拼音层都放弃了，才轮到模型。硬超时在 llm.py 里，
+            # 超时就当没有这一层 —— 回"这个我还不会"，跟以前一样。
+            guess = await self.llm.classify(text)
+            if guess:
+                parsed = Intent(domain=guess["domain"], action=guess["action"],
+                                slots=guess.get("slots") or {},
+                                reply=guess.get("reply", ""), raw=text, rule="llm")
+                _LOG.info("规则没中，LLM 判成 %s.%s", parsed.domain, parsed.action)
+
+        ok, reply = await self.execute(parsed)
+        return parsed, ok, reply
+
+    async def execute(self, intent: Intent) -> tuple[bool, str]:
+        if intent.domain == "none" or intent.action == "none":
+            return False, intent.reply or "这个我还不会"
+
+        target = self._for(intent.domain)
+        if target is None:
+            return False, "这台设备还没接上"
+
+        ok, reply = await target.execute(intent)
+        if ok:
+            self.last_domain = intent.domain
+        return ok, reply
+
+    def status(self) -> dict:
+        out: dict = {"last_domain": self.last_domain}
+        if self.tivoli is not None:
+            out["tivoli"] = self.tivoli.shadow.as_dict()
+            out["tivoli"]["measured"] = bool(self.tivoli.conf.get("measured"))
+        if self.music is not None:
+            out["music"] = self.music.status()
+        return out

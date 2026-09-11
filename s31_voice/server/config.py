@@ -53,6 +53,16 @@ class Config:
     tts_voice: str = field(default_factory=lambda: _env("TTS_VOICE", "zm_011"))
     tts_speed: float = field(default_factory=lambda: float(_env("TTS_SPEED", "1.0")))
 
+    # ---- Tivoli / AirPlay ----
+    # 不写死 IP：pyatv 先按这个地址定点扫（快），扫不到再按名字全网找。
+    # 两者都留空也能跑，只是每次都要全网扫一遍（~6s）。
+    airplay_host: str = field(default_factory=lambda: _env("AIRPLAY_HOST"))
+    airplay_name: str = field(default_factory=lambda: _env("AIRPLAY_NAME", "Tivoli"))
+    # 设备自己的 AirPlay 鉴权密码。**从配置读，不硬编码** —— 而且要知道：
+    # 这台机器的 http://<ip>/index.asp 会把它明文写在返回的 HTML 里
+    # （roadmap R7）。那是固件的问题，不是我们引入的，但同网段谁都看得见。
+    airplay_password: str = field(default_factory=lambda: _env("AIRPLAY_PASSWORD"))
+
     # ---- 音频 ----
     # 板子侧 I2S 采样率：ES8311 单声道 16k/16bit，跟 WakeNet/AFE 的输入一致
     board_sample_rate: int = 16000

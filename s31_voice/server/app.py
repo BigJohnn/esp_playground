@@ -6,8 +6,13 @@
   GET  /commands/version 只回版本号，几十字节 —— 板子轮询用这个，不是上面那个
   POST /stt              裸 PCM / wav -> 文本
   POST /tts              文本 -> 16k PCM
-  POST /command          文本 -> 解析意图、控灯、返回回话（板上 MultiNet 认出来后走这条）
-  POST /utterance        整段 PCM -> STT -> 控灯（板上没认出来的兜底）
+  POST /command          文本 -> 解析意图、控设备、返回回话（板上 MultiNet 认出来后走这条）
+  POST /utterance        整段 PCM -> STT -> 控设备（板上没认出来的兜底）
+  GET  /devices          三台设备各自的状态（Tivoli 那栏是影子状态，不是真相）
+  POST /tivoli/anchor    推一段静音锚定，看设备在不在 WiFi 源上（M6 排查用）
+  POST /tivoli/ir/{键}   直接发一条红外（M6 实测用）
+  POST /tivoli/hold_frames  改板上"长按连发多少帧"（M6 扫这个值用）
+  GET  /music/status     当前队列和正在放的歌
   WS   /voice            旧的双向通道，板子已经不用了
 
 先能用命令行/HTTP 单测每一段，再接板子。
@@ -35,10 +40,15 @@ from fastapi.responses import JSONResponse, Response
 
 import discovery
 import intent as intent_mod
+from airplay import AirPlay
 from config import CONFIG
-from executor import LightExecutor
+from executor import LightExecutor, Router
 from ha import HomeAssistant
+from llm import LocalLLM
+from netease import Netease
+from player import MusicExecutor
 from stt import STT
+from tivoli import TivoliExecutor
 from tts import TTS
 
 logging.basicConfig(
@@ -50,22 +60,51 @@ _LOG = logging.getLogger("app")
 
 _ha: HomeAssistant
 _exec: LightExecutor
+_router: Router
+_air: AirPlay
+_tivoli: TivoliExecutor
+_music: MusicExecutor
+_ne: Netease
+_llm: LocalLLM
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _ha, _exec
+    global _ha, _exec, _router, _air, _tivoli, _music, _ne, _llm
     _ha = HomeAssistant()
     _exec = LightExecutor(_ha)
     if not CONFIG.ha_token:
         _LOG.warning("HA_TOKEN 没设，控灯会失败。HA -> 头像 -> 安全 -> 长期访问令牌")
+
+    _air = AirPlay(host=CONFIG.airplay_host, name=CONFIG.airplay_name,
+                   password=CONFIG.airplay_password)
+    _tivoli = TivoliExecutor(_ha, _air)
+    _ne = Netease()
+    _llm = LocalLLM()
+    _music = MusicExecutor(_ne, _air, _tivoli, _llm)
+    _router = Router(_exec, tivoli=_tivoli, music=_music, llm=_llm)
+
+    if not CONFIG.airplay_password:
+        _LOG.warning("AIRPLAY_PASSWORD 没设，推流会被拒 —— 密码在设备自己的配置页上")
+    if not _ne.logged_in:
+        _LOG.warning("网易云没登录，「播放我的收藏」用不了。跑 tools/netease_login.py")
+    if not _tivoli.conf.get("measured"):
+        _LOG.warning("tivoli.json 的常数还没实测（measured=false），FM 那条链会拒绝动作")
+
     _disc_thread, _disc_stop = discovery.start(CONFIG.port)
     # miIO 握手保活。不这么做的话，每条隔了一分钟以上的命令都要先重握，
     # 那一下几百毫秒全落在用户等待里 —— 而控灯本来就是整条链上最慢的一段。
     warm_task = asyncio.create_task(_exec.keep_warm())
+    # 模型预热放后台。它可能要几十秒（第一次加载 3G 权重），
+    # 而这期间服务端必须已经能控灯 —— 兜底层不该挡住主路径起步。
+    llm_task = asyncio.create_task(_llm.warm())
     yield
     warm_task.cancel()
+    llm_task.cancel()
     _disc_stop.set()
+    await _air.close()
+    await _ne.close()
+    await _llm.close()
     await _ha.close()
 
 
@@ -146,7 +185,58 @@ async def health():
 @app.get("/status")
 async def status():
     """/health 之外的细节放这儿 —— 这个要令牌。"""
-    return {"ok": True, "light": await _exec.entity(), "auth": bool(CONFIG.api_token)}
+    return {"ok": True, "light": await _exec.entity(), "auth": bool(CONFIG.api_token),
+            "netease": _ne.logged_in, "llm": await _llm.available(), **_router.status()}
+
+
+@app.get("/devices")
+async def devices():
+    """三台设备现在各自是什么状态。
+
+    要看明白一件事：tivoli 那一栏是**影子状态**，不是设备回报的真相 ——
+    设备什么都不回报。anchored_s_ago 越大，这栏越不可信；
+    中间只要有人拿实体遥控器按过，它就已经错了。
+    """
+    return _router.status()
+
+
+@app.post("/tivoli/ir/{button}")
+async def tivoli_ir(button: str, times: int = 1):
+    """直接发一条红外。给 M6 实测用的 —— 数源循环、试长按帧数都靠它。
+
+    刻意不做白名单：这是排查口子，能按的键本来就写在 tivoli_ir.yaml 里，
+    按错了最多是设备做了件我们没想要的事，不会有别的后果。
+    """
+    ok = await _tivoli.press(button, times=times)
+    return {"ok": ok, "button": button, "times": times}
+
+
+@app.post("/tivoli/anchor")
+async def tivoli_anchor():
+    """推一段静音，看能不能锚上。M6 的第一项，也是排查"设备到底开着没"的标准手段。"""
+    t = _Timer()
+    ok = await _tivoli.anchor()
+    t.mark("anchor")
+    return {"ok": ok, "shadow": _tivoli.shadow.as_dict(), "ms": t.done(),
+            "meaning": "开着 + 在 WiFi 源 + 网络通" if ok else "关着，或者停在别的源上，或者掉网"}
+
+
+@app.post("/tivoli/hold_frames")
+async def tivoli_hold_frames(value: int):
+    """改板上"长按连发多少帧"这个数。M6 扫这个值时用 —— 板上是个 template number，
+    所以扫一遍是拧旋钮，不是重烧固件。"""
+    try:
+        await _ha.call("number", "set_value",
+                       entity_id="number.tivoli_ir_hold_frames", value=int(value))
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+    _tivoli.conf["hold_frames"] = int(value)
+    return {"ok": True, "hold_frames": int(value)}
+
+
+@app.get("/music/status")
+async def music_status():
+    return _music.status()
 
 
 def _commands_payload() -> dict:
@@ -210,13 +300,12 @@ async def command_endpoint(request: Request):
     t = _Timer()
     payload = await request.json()
     text = payload.get("text", "")
-    parsed = intent_mod.parse(text)
-    t.mark("intent")
-    ok, reply = await _exec.execute(parsed)
+    parsed, ok, reply = await _router.parse_and_execute(text)
     t.mark("exec")
-    _LOG.info("命令词 %r 意图=%s(%s) 执行=%s  [%s]", text, parsed.action, parsed.rule, ok,
-              _fmt_ms(t.marks))
-    return JSONResponse({"text": text, "action": parsed.action, "rule": parsed.rule,
+    _LOG.info("命令词 %r 意图=%s.%s(%s) 执行=%s  [%s]", text, parsed.domain, parsed.action,
+              parsed.rule, ok, _fmt_ms(t.marks))
+    return JSONResponse({"text": text, "domain": parsed.domain, "action": parsed.action,
+                         "rule": parsed.rule, "slots": parsed.slots,
                          "ok": ok, "reply": reply, "ms": t.done()})
 
 
@@ -249,16 +338,15 @@ async def utterance_endpoint(request: Request):
         _LOG.info("原始音频存到 %s", path)
     text = await asyncio.to_thread(STT.transcribe_array, audio, rate)
     t.mark("stt")
-    parsed = intent_mod.parse(text)
-    t.mark("intent")
-    ok, reply = await _exec.execute(parsed)
+    parsed, ok, reply = await _router.parse_and_execute(text)
     t.mark("exec")
     # 顺带记一个"识别快过实时多少倍"：STT 慢是慢在模型还是慢在这句话太长，
     # 只看绝对毫秒数分不出来。
-    _LOG.info("兜底 %.2fs 音频 -> %r 意图=%s(%s) 执行=%s  [%s, %.1fx 实时]", secs, text,
-              parsed.action, parsed.rule, ok, _fmt_ms(t.marks),
+    _LOG.info("兜底 %.2fs 音频 -> %r 意图=%s.%s(%s) 执行=%s  [%s, %.1fx 实时]", secs, text,
+              parsed.domain, parsed.action, parsed.rule, ok, _fmt_ms(t.marks),
               secs * 1000 / max(t.marks["stt"], 1))
-    return JSONResponse({"text": text, "action": parsed.action, "rule": parsed.rule,
+    return JSONResponse({"text": text, "domain": parsed.domain, "action": parsed.action,
+                         "rule": parsed.rule, "slots": parsed.slots,
                          "ok": ok, "reply": reply, "ms": t.done()})
 
 
@@ -302,9 +390,9 @@ async def voice_socket(ws: WebSocket):
             _LOG.info("收到 %.2fs 音频，开始识别", secs)
 
             text = await STT.transcribe_pcm_async(pcm)
-            parsed = intent_mod.parse(text)
-            ok, reply = await _exec.execute(parsed)
-            _LOG.info("识别=%r 意图=%s 执行=%s 回话=%r", text, parsed.action, ok, reply)
+            parsed, ok, reply = await _router.parse_and_execute(text)
+            _LOG.info("识别=%r 意图=%s.%s 执行=%s 回话=%r", text, parsed.domain,
+                      parsed.action, ok, reply)
 
             await ws.send_text(json.dumps(
                 {"text": text, "action": parsed.action, "ok": ok, "reply": reply},

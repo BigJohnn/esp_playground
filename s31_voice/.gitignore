@@ -8,3 +8,4 @@ firmware/managed_components/
 firmware/dependencies.lock
 *.pyc
 firmware/sdkconfig.secret
+server/.netease_cookie

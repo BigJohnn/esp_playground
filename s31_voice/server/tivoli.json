@@ -1,0 +1,25 @@
+{
+  "_": "Tivoli 的物理常数。这里每一个值都必须是量出来的 —— 见 roadmap 的 M6。",
+  "_measured": "全部量完之后把 measured 改成 true，FM 那条链才会真的动作。",
+  "_source_cycle": "手册写的是 WiFi/FM/DAB/Bluetooth/Auxiliary，**和本机实测不符** —— 实测 wifi→aux→bt→fm，一圈 4 档无 DAB。以实测为准。",
+  "source_cycle": [
+    "wifi",
+    "aux",
+    "bt",
+    "fm"
+  ],
+  "_tune_keys": "2026-09-11 实测：▲▼ 和 ◀▶ **两组都能调**，上/右 = +0.05MHz，下/左 = -0.05MHz。留一组冗余。",
+  "tune_keys": "up_down",
+  "_hold_frames": "长按存台要连发多少个 NEC 帧（板上按 108ms 周期发）。18 帧 ≈ 1.94s。R4。",
+  "hold_frames": 18,
+  "_timings": "毫秒。ir_gap 是两次红外之间的间隔，太快会被设备吞掉。",
+  "ir_gap_ms": 600,
+  "source_settle_ms": 1500,
+  "power_settle_ms": 3000,
+  "measured": false,
+  "_tune_step_mhz": "手册里 FM Tuning Steps 是**设置项**（SETTINGS→FM Tuning Steps），可按地区改。当前实测 0.05MHz。国内台间隔 0.1MHz，改成 0.1 才能一按一个频道位。",
+  "tune_step_mhz": 0.05,
+  "_manual": "以下几条来自官方手册 M1D2_Manual_20240918.pdf，不是试出来的。",
+  "_autoscan": "手册：自动搜台（Autoscan Up）只能**双击机身旋钮**，遥控器上根本没有这个功能。遥控器按键全集：MUTE/ALARM/方向键+SELECT/音量±/预设1-6/SETTINGS/SOURCE/SLEEP/POWER。所以红外做不到「下一个电台」—— 只能 ±0.05MHz 微调。",
+  "_preset_hold": "手册：「Press and hold to save a new radio station. Single press to recall」，但同一段又说「To delete the preset, hold down the button on the remote」—— **长按在空位是存、在占用位可能是删**。没验证之前 preset_save 不覆盖已占用的位子。"
+}
