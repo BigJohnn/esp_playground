@@ -232,26 +232,40 @@ class TivoliExecutor:
             ok, why = await self.ensure_fm()
             if not ok:
                 return False, why
-            # 长按靠板子侧连发 NEC 帧实现，帧数在 tivoli.json 里，板上有个
-            # number 实体接着它 —— M6 要扫这个值，扫的时候不用重烧固件。
             if not await self._set_hold_frames():
                 return False, "设不了长按帧数"
+            # 长按是 **toggle**，不是覆盖（2026-09-11 实测：位子空则存、位子满则删）。
+            # 所以要按原来的占用状态决定按几下：满的先删一次再存，空的直接存。
+            # 这笔账只有我们自己操作时才准 —— 有人拿实体遥控器动过预设，它就开始腐化，
+            # 而腐化的后果是"说存台结果把台删了"。所以宁可多问一句也不要猜错。
+            if self.occupied(n):
+                if not await self.press(f"preset_{n}_hold"):
+                    return False, "红外发不出去"
+                self.set_occupied(n, False)
+                await asyncio.sleep(self.conf["ir_gap_ms"] / 1000.0)
             if not await self.press(f"preset_{n}_hold"):
                 return False, "红外发不出去"
+            self.set_occupied(n, True)
             self.shadow.set(preset=n)
             return True, f"存到预设{n}了"
 
         if a == "station_step":
+            # 说明书查过了：自动搜台（Autoscan）**只能双击机身旋钮**，遥控器上没有这个键
+            # （遥控器按键全集：MUTE/ALARM/方向键+SELECT/音量±/预设1-6/SETTINGS/SOURCE/SLEEP/POWER）。
+            # 所以红外做不到"下一个电台"，方向键只是 ±tune_step_mhz 的微调。
+            # 与其假装能换台、实际只挪了半格，不如说实话，并把人引到真正能用的办法上。
             step = intent.slots.get("step", 1)
             ok, why = await self.ensure_fm()
             if not ok:
                 return False, why
             up, down = ("up", "down") if self.conf["tune_keys"] == "up_down" else ("right", "left")
-            if not await self.press(up if step > 0 else down, times=abs(step)):
+            # 走一个频道位要按几下：国内台间隔 0.1MHz，而出厂步进是 0.05
+            per = max(1, round(0.1 / float(self.conf.get("tune_step_mhz") or 0.05)))
+            if not await self.press(up if step > 0 else down, times=per * abs(step)):
                 return False, "红外发不出去"
-            # 换台之后我们不知道停在哪个频率上了，预设的记账作废
-            self.shadow.set(preset=None)
-            return True, "换个台" if step > 0 else "退回上一个台"
+            self.shadow.set(preset=None)   # 挪过频率之后，预设的记账作废
+            return True, ("往上挪了一格，遥控器上没有搜台键，只能微调"
+                          if step > 0 else "往下挪了一格")
 
         if a == "volume_step":
             step = int(intent.slots.get("step", 1))
@@ -282,6 +296,27 @@ class TivoliExecutor:
             return True, "静音了"
 
         return False, intent.reply or "这个我还不会"
+
+    # ---------- 预设占用记账 ----------
+
+    def occupied(self, n: int) -> bool:
+        return bool((self.conf.get("preset_occupied") or {}).get(str(n), True))
+
+    def set_occupied(self, n: int, value: bool) -> None:
+        """记账要落盘 —— 进程重启之后如果忘了哪些位子是满的，
+        下一次"存台"就会变成"删台"，而这个错用户是看不见的（屏幕我们读不到）。"""
+        table = dict(self.conf.get("preset_occupied") or {})
+        table[str(n)] = bool(value)
+        self.conf["preset_occupied"] = table
+        try:
+            with open(_CONF_PATH, encoding="utf-8") as f:
+                raw = json.load(f)
+            raw["preset_occupied"] = table
+            with open(_CONF_PATH, "w", encoding="utf-8") as f:
+                json.dump(raw, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+        except Exception as exc:  # noqa: BLE001 - 落盘失败不该让这次操作算失败
+            _LOG.warning("预设占用表存不下去：%s", exc)
 
     async def _set_hold_frames(self) -> bool:
         """把长按的帧数推给板子。板上是个 template number，改它不用重烧。"""
