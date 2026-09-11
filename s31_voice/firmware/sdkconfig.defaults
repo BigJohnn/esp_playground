@@ -35,3 +35,7 @@ CONFIG_LWIP_SO_RCVBUF=y
 
 # AFE 的两条任务吃 CPU，主任务栈也要够大（要跑 HTTP + cJSON）
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# 背面 J9 接了一只 4Ω/3W 喇叭（2026-09-11）。打开之后回话就从板子自己出来，
+# 不再依赖 Tivoli + AirPlay 那条链路 —— 那条链路一断电就要人手重连，见 README。
+CONFIG_S31_HAS_SPEAKER=y

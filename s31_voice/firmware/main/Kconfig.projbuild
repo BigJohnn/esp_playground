@@ -52,6 +52,14 @@ config S31_HAS_SPEAKER
         省掉开机播报的 3.5 秒和每次兜底的 1.5 秒 —— 那些音频反正没人听得见。
         接上之后打开，回话就自动恢复，代码不用动。
 
+config S31_SPEAKER_VOLUME
+    int "喇叭输出音量 (0-100)"
+    default 85
+    help
+        ES8311 的 DAC 输出音量。原来在 main.c 里写死 70，接上喇叭实测偏小听不清。
+        做成配置项是为了能扫 —— 太大会削顶失真，太小听不见，
+        而这只能一档一档放出来听，推不出来。
+
 config S31_COMMAND_TIMEOUT_MS
     int "唤醒后等命令词的时间 (ms)"
     default 6000

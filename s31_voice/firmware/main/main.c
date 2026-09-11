@@ -362,7 +362,7 @@ void app_main(void)
         led_set(24, 0, 0);
         return;
     }
-    audio_hw_set_volume(codec, 70);
+    audio_hw_set_volume(codec, CONFIG_S31_SPEAKER_VOLUME);
     audio_hw_set_mic_gain(codec, (float)CONFIG_S31_MIC_GAIN_DB);
     /* audio_hw_diag(codec);  开机不跑，排查喇叭时手动打开 */
 
