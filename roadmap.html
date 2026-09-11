@@ -1,0 +1,973 @@
+<title>Tivoli 语音控制路线图</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+SC:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+
+<style>
+:root {
+  /* 冷调纸 —— 中性色带绿偏，与两个强调色同源 */
+  --paper:      #F2F3F0;
+  --paper-2:    #E9EBE6;
+  --paper-3:    #DFE2DC;
+  --ink:        #1A1D1B;
+  --ink-2:      #41473F;
+  --muted:      #6B716C;
+  --rule:       #D2D6CE;
+  --rule-soft:  #E2E5DF;
+
+  /* 车道色：signal = IR / FM（遥控器那颗红电源键）；wave = 网络 / 音乐 */
+  --signal:     #B8481F;
+  --signal-bg:  #F6E6DF;
+  --wave:       #2A6360;
+  --wave-bg:    #DFEAE8;
+
+  /* 语义色，与车道色分开 */
+  --ok:         #3D6B45;
+  --ok-bg:      #E2EBE0;
+  --warn:       #8E6414;
+  --warn-bg:    #F3EBD8;
+  --stop:       #7A2E2E;
+  --stop-bg:    #EFE0DF;
+
+  --shadow: 0 1px 2px rgba(26,29,27,.06), 0 8px 24px -14px rgba(26,29,27,.22);
+
+  --f-display: "IBM Plex Sans SC", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --f-body:    "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --f-mono:    "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --measure: 68ch;
+  --wide: 1080px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:      #141715;
+    --paper-2:    #1B1F1C;
+    --paper-3:    #232823;
+    --ink:        #E7E9E3;
+    --ink-2:      #B9BEB6;
+    --muted:      #8B928B;
+    --rule:       #2E332E;
+    --rule-soft:  #242923;
+
+    --signal:     #E07A50;
+    --signal-bg:  #2E1D16;
+    --wave:       #6FB3AE;
+    --wave-bg:    #142827;
+
+    --ok:         #7FB183;
+    --ok-bg:      #17251A;
+    --warn:       #D2A64B;
+    --warn-bg:    #2A2214;
+    --stop:       #DE8A82;
+    --stop-bg:    #2B1817;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.7);
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper:      #141715;
+  --paper-2:    #1B1F1C;
+  --paper-3:    #232823;
+  --ink:        #E7E9E3;
+  --ink-2:      #B9BEB6;
+  --muted:      #8B928B;
+  --rule:       #2E332E;
+  --rule-soft:  #242923;
+
+  --signal:     #E07A50;
+  --signal-bg:  #2E1D16;
+  --wave:       #6FB3AE;
+  --wave-bg:    #142827;
+
+  --ok:         #7FB183;
+  --ok-bg:      #17251A;
+  --warn:       #D2A64B;
+  --warn-bg:    #2A2214;
+  --stop:       #DE8A82;
+  --stop-bg:    #2B1817;
+
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.7);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 16px;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: var(--wide);
+  margin: 0 auto;
+  padding: 0 28px 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ---------- 刊头 ---------- */
+
+.masthead { padding: 72px 0 0; }
+
+.eyebrow {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 20px;
+}
+
+h1 {
+  font-family: var(--f-display);
+  font-weight: 700;
+  font-size: clamp(34px, 5.2vw, 52px);
+  line-height: 1.14;
+  letter-spacing: -.015em;
+  margin: 0;
+  max-width: 20ch;
+  text-wrap: balance;
+}
+
+.standfirst {
+  max-width: var(--measure);
+  margin: 22px 0 0;
+  font-size: 17.5px;
+  color: var(--ink-2);
+  line-height: 1.72;
+}
+
+.standfirst strong { color: var(--ink); font-weight: 700; }
+
+/* FM 刻度尺 —— 全页唯一的装饰笔触 */
+.dial {
+  margin: 40px 0 8px;
+  height: 34px;
+  position: relative;
+  border-bottom: 1px solid var(--rule);
+}
+.dial-ticks {
+  position: absolute;
+  inset: 0 0 0 0;
+  background-image:
+    repeating-linear-gradient(to right, var(--rule) 0 1px, transparent 1px 20px),
+    repeating-linear-gradient(to right, var(--ink-2) 0 1px, transparent 1px 100px);
+  background-size: 100% 9px, 100% 17px;
+  background-position: bottom left, bottom left;
+  background-repeat: repeat-x;
+  opacity: .55;
+}
+.dial-needle {
+  position: absolute;
+  left: 34%;
+  bottom: 0;
+  width: 2px;
+  height: 30px;
+  background: var(--signal);
+}
+.dial-scale {
+  position: absolute;
+  bottom: 19px;
+  left: 0; right: 0;
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  letter-spacing: .06em;
+}
+
+.meta-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 30px;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 0 0;
+}
+.meta-strip b { color: var(--ink-2); font-weight: 500; }
+
+/* ---------- 章节 ---------- */
+
+section { padding: 64px 0 0; }
+
+h2 {
+  font-family: var(--f-display);
+  font-weight: 600;
+  font-size: 27px;
+  line-height: 1.3;
+  letter-spacing: -.01em;
+  margin: 0 0 6px;
+  text-wrap: balance;
+}
+
+.sec-note {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 28px;
+  letter-spacing: .02em;
+}
+
+h3 {
+  font-family: var(--f-display);
+  font-weight: 600;
+  font-size: 18px;
+  line-height: 1.45;
+  margin: 36px 0 10px;
+  max-width: var(--measure);
+}
+
+p { max-width: var(--measure); margin: 0 0 16px; }
+p:last-child { margin-bottom: 0; }
+
+.prose > ul, .prose > ol { max-width: var(--measure); padding-left: 1.25em; margin: 0 0 16px; }
+li { margin: 0 0 8px; }
+
+code, .mono { font-family: var(--f-mono); font-size: .88em; }
+p code, li code, td code, th code {
+  background: var(--paper-3);
+  padding: .12em .38em;
+  border-radius: 2px;
+  color: var(--ink);
+}
+
+a { color: var(--wave); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:focus-visible, .lane:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--rule-soft);
+  margin: 56px 0 0;
+}
+
+/* ---------- 车道标记 ---------- */
+
+.lane {
+  display: inline-block;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 2px;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+.lane-ir   { color: var(--signal); background: var(--signal-bg); }
+.lane-net  { color: var(--wave);   background: var(--wave-bg); }
+.lane-both { color: var(--ink-2);  background: var(--paper-3); }
+
+.tag {
+  display: inline-block;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  padding: 2px 8px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.t-ok   { color: var(--ok);   background: var(--ok-bg); }
+.t-warn { color: var(--warn); background: var(--warn-bg); }
+.t-stop { color: var(--stop); background: var(--stop-bg); }
+.t-new  { color: var(--ink-2); background: var(--paper-3); }
+
+/* ---------- 表格 ---------- */
+
+.wrap { overflow-x: auto; margin: 0 0 8px; -webkit-overflow-scrolling: touch; }
+
+table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+thead th {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: left;
+  padding: 0 16px 9px 0;
+  border-bottom: 1.5px solid var(--rule);
+  white-space: nowrap;
+}
+tbody td {
+  padding: 11px 16px 11px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+}
+tbody tr:last-child td { border-bottom: 1px solid var(--rule); }
+td:last-child, th:last-child { padding-right: 0; }
+.num { font-variant-numeric: tabular-nums; font-family: var(--f-mono); font-size: 13px; white-space: nowrap; }
+.t-what { font-weight: 500; color: var(--ink); }
+td.tight { white-space: nowrap; }
+
+/* ---------- 代码 / 框图 ---------- */
+
+pre {
+  font-family: var(--f-mono);
+  font-size: 12.5px;
+  line-height: 1.62;
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  padding: 20px 22px;
+  margin: 0 0 8px;
+  overflow-x: auto;
+  color: var(--ink-2);
+  -webkit-overflow-scrolling: touch;
+}
+pre b { color: var(--ink); font-weight: 600; }
+pre .s { color: var(--signal); }
+pre .w { color: var(--wave); }
+
+figcaption {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  margin: 10px 0 0;
+  max-width: var(--measure);
+  line-height: 1.6;
+}
+figure { margin: 0; }
+
+/* ---------- 论点块 ---------- */
+
+.claim {
+  border-top: 2px solid var(--ink);
+  padding: 16px 0 0;
+  margin: 0 0 28px;
+  max-width: var(--measure);
+}
+.claim-k {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: block;
+  margin: 0 0 8px;
+}
+.claim h3 { margin: 0 0 8px; font-size: 19px; }
+.claim p { margin: 0; color: var(--ink-2); }
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 30px;
+  max-width: none;
+}
+.grid-3 .claim { max-width: none; margin: 0; }
+
+.pull {
+  border-left: 3px solid var(--signal);
+  padding: 4px 0 4px 20px;
+  margin: 28px 0;
+  max-width: var(--measure);
+}
+.pull p { margin: 0; font-size: 17px; color: var(--ink); font-weight: 500; }
+
+/* ---------- 里程碑轨道 ---------- */
+
+.track { display: flex; flex-direction: column; gap: 0; }
+
+.ms {
+  display: grid;
+  grid-template-columns: 78px 1fr;
+  gap: 0 26px;
+  padding: 26px 0;
+  border-top: 1px solid var(--rule-soft);
+}
+.ms:first-child { border-top: 1.5px solid var(--rule); }
+.ms:last-child { border-bottom: 1.5px solid var(--rule); }
+
+.ms-id {
+  font-family: var(--f-mono);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.2;
+  letter-spacing: -.01em;
+}
+.ms-est {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--muted);
+  display: block;
+  margin-top: 4px;
+  letter-spacing: .03em;
+}
+.ms-body h3 { margin: 0 0 8px; font-size: 18.5px; }
+.ms-body p { margin: 0 0 12px; color: var(--ink-2); }
+.ms-body ul { margin: 0; padding-left: 1.15em; color: var(--ink-2); font-size: 15px; }
+.ms-lanes { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+
+.gate .ms-id { color: var(--signal); }
+
+/* ---------- 风险 ---------- */
+
+.risks { display: flex; flex-direction: column; gap: 0; }
+.risk {
+  display: grid;
+  grid-template-columns: 54px 1fr;
+  gap: 0 22px;
+  padding: 20px 0;
+  border-top: 1px solid var(--rule-soft);
+}
+.risk:first-child { border-top: 1.5px solid var(--rule); }
+.risk:last-child { border-bottom: 1.5px solid var(--rule); }
+.risk-id {
+  font-family: var(--f-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: .05em;
+  padding-top: 2px;
+}
+.risk h3 { margin: 0 0 6px; font-size: 16.5px; }
+.risk p { margin: 0 0 8px; font-size: 15px; color: var(--ink-2); }
+.risk p:last-child { margin: 0; }
+.mit {
+  font-family: var(--f-mono);
+  font-size: 12.5px;
+  color: var(--muted);
+  display: block;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
+/* ---------- 不做清单 ---------- */
+
+.nots { max-width: var(--measure); border-top: 1.5px solid var(--rule); }
+.not {
+  display: grid;
+  grid-template-columns: minmax(150px, auto) 1fr;
+  gap: 0 22px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  align-items: baseline;
+}
+.not b { font-weight: 600; color: var(--ink); font-size: 15px; }
+.not span { color: var(--muted); font-size: 14.5px; }
+
+/* ---------- 待决 ---------- */
+
+.asks { max-width: var(--measure); counter-reset: ask; }
+.ask {
+  padding: 18px 0;
+  border-top: 1px solid var(--rule-soft);
+}
+.ask:first-child { border-top: 1.5px solid var(--rule); }
+.ask:last-child { border-bottom: 1.5px solid var(--rule); }
+.ask h3 { margin: 0 0 6px; font-size: 16.5px; }
+.ask h3::before {
+  counter-increment: ask;
+  content: "问 " counter(ask) " · ";
+  font-family: var(--f-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--signal);
+  letter-spacing: .05em;
+}
+.ask p { margin: 0; font-size: 15px; color: var(--ink-2); }
+
+footer {
+  margin-top: 72px;
+  padding-top: 22px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.9;
+  letter-spacing: .02em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+
+@media (max-width: 640px) {
+  .page { padding: 0 20px 80px; }
+  .masthead { padding-top: 48px; }
+  .ms { grid-template-columns: 1fr; gap: 10px; }
+  .ms-id { font-size: 18px; }
+  .risk { grid-template-columns: 1fr; gap: 6px; }
+  .not { grid-template-columns: 1fr; gap: 2px; }
+}
+</style>
+
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Tivoli Audio Model One Digital Gen 2 · 语音控制 · 2026-09-10</p>
+  <h1>把一台只认红外的收音机<br>接进语音链路</h1>
+  <p class="standfirst">
+    这台机器有两副面孔：一副是 19 个红外码，能按但读不回来；另一副是 AirPlay 2 和
+    Spotify Connect，能推流但问不出状态。<strong>方案的全部难点在于把这两副面孔缝成一个可定位的状态机</strong> ——
+    而缝合点只有一个，就是我们自己让它发出的声音。
+  </p>
+
+  <div class="dial" aria-hidden="true">
+    <div class="dial-scale"><span>88</span><span>92</span><span>96</span><span>100</span><span>104</span><span>108</span></div>
+    <div class="dial-ticks"></div>
+    <div class="dial-needle"></div>
+  </div>
+  <div class="meta-strip">
+    <span>设备 <b>192.168.0.107</b></span>
+    <span>模块 <b>Libre Wireless LS1.5</b></span>
+    <span>语音入口 <b>S31-Korvo</b></span>
+    <span>大脑 <b>MBP M1 Pro / 16 GB</b></span>
+  </div>
+</header>
+
+<!-- ============ 0. 事实核查 ============ -->
+<section id="facts">
+  <h2>事实核查</h2>
+  <p class="sec-note">2026-09-10 实测得出，不是从手册抄的。方法列在最后一栏。</p>
+
+  <div class="wrap">
+  <table>
+    <thead>
+      <tr><th style="width:22%">项</th><th style="width:44%">结论</th><th>怎么得到的</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="t-what">设备身份</td>
+        <td>Tivoli Audio M1D_2A0D02，<code>audiocast.local</code> = <span class="num">192.168.0.107</span></td>
+        <td>mDNS <code>_http._tcp</code> 解析</td>
+      </tr>
+      <tr>
+        <td class="t-what">网络模块</td>
+        <td>Libre Wireless <b>LS1.5</b>，固件 <code>p15492.158.0</code>（2023-11），AirPlay SDK 2.0.10</td>
+        <td>AirPlay <code>POST /info</code> 的 plist</td>
+      </tr>
+      <tr>
+        <td class="t-what">AirPlay 2 <span class="lane lane-net">net</span></td>
+        <td><b>活着</b>。<code>:7000</code> 应答 200；<code>keepAliveLowPower=true</code> —— <b>待机时网络仍在，可被网络流唤醒</b>；需要密码</td>
+        <td><code>/info</code> + mDNS TXT <code>pw=true</code></td>
+      </tr>
+      <tr>
+        <td class="t-what">Google Cast <span class="lane lane-net">net</span></td>
+        <td><span class="tag t-warn">存疑</span> <code>:8009</code> TCP 能连，但 TLS1.0/1.1/1.2/1.3 四个版本全部在握手时被 <code>RST</code>；<code>:8008/setup/eureka_info</code> 返回空</td>
+        <td><code>openssl s_client</code> 四轮 + pychromecast 两种连法</td>
+      </tr>
+      <tr>
+        <td class="t-what">Spotify Connect</td>
+        <td><code>:9095</code> 在广播（本方案用不上，记录备查）</td>
+        <td>mDNS <code>_spotify-connect._tcp</code></td>
+      </tr>
+      <tr>
+        <td class="t-what">厂商 HTTP API</td>
+        <td><span class="tag t-stop">没有</span> <code>/httpapi.asp</code> 一律 404 —— 不是 LinkPlay 模块，那套命令集不适用</td>
+        <td>直接请求 <code>getStatusEx</code> 等</td>
+      </tr>
+      <tr>
+        <td class="t-what">配置页</td>
+        <td><code>:80</code> GoAhead / <code>lsync</code>。<b>AirPlay 密码明文写在 HTML 源码里</b>（见风险 R7）</td>
+        <td><code>index.asp</code> 源码</td>
+      </tr>
+      <tr>
+        <td class="t-what">源列表 <span class="lane lane-ir">ir</span></td>
+        <td>WiFi / FM / DAB<span class="mono">(若有)</span> / 蓝牙 / AUX，SOURCE 短按循环。<b>本机有没有 DAB 未确认</b> —— 直接决定切源要按几次</td>
+        <td>Gen 2 官方手册</td>
+      </tr>
+      <tr>
+        <td class="t-what">预设 <span class="lane lane-ir">ir</span></td>
+        <td>长按数字键存台，短按叫回。长按的红外时序需要实现</td>
+        <td>同上</td>
+      </tr>
+      <tr>
+        <td class="t-what">红外桥</td>
+        <td><span class="tag t-ok">已通</span> 19 个键已录、NEC 校验全过、已 OTA 烧入 <code>tivoli_ir</code>，HA 里 19 个 button 实体在线</td>
+        <td>昨天做的</td>
+      </tr>
+      <tr>
+        <td class="t-what">语音入口</td>
+        <td><span class="tag t-ok">已通</span> S31-Korvo：唤醒 9/9、命令词 9/9、日常句子误唤醒 0/36、<code>/utterance</code> 兜底通</td>
+        <td><code>s31_voice/README</code> §4.1.3 / 4.1.11</td>
+      </tr>
+      <tr>
+        <td class="t-what">板载喇叭</td>
+        <td><span class="tag t-stop">没有</span> J9 是空接口，TTS 回话听不见，现在靠黄灯闪两下代替</td>
+        <td><code>s31_voice/README</code> §5</td>
+      </tr>
+      <tr>
+        <td class="t-what">大脑机器</td>
+        <td>M1 Pro / 16 GB / 空闲磁盘仅 <b>33 GB</b> —— 限死了本地 LLM 的选型</td>
+        <td><code>system_profiler</code> / <code>df</code></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<hr>
+
+<!-- ============ 1. 第一性原理 ============ -->
+<section id="principles" class="prose">
+  <h2>三条硬约束，和从中推出的唯一解法</h2>
+  <p class="sec-note">不先把约束说死，后面每个设计决定都会变成口味之争。</p>
+
+  <div class="grid-3">
+    <div class="claim">
+      <span class="claim-k">约束一</span>
+      <h3>红外是开环的</h3>
+      <p>19 个码发得出去，但什么都读不回来。更糟的是语义：POWER 是 <b>toggle</b> 不是 on/off，SOURCE 是<b>循环</b>不是选择。所以「开机」「切到 FM」这类指令在纯红外下都只是概率事件。</p>
+    </div>
+    <div class="claim">
+      <span class="claim-k">约束二</span>
+      <h3>网络能推流，问不出状态</h3>
+      <p>AirPlay 能让它出声，也能读回<b>我们这一路</b>播到了哪。但读不出「它现在是不是在放 FM」「频率多少」「音量绝对值多少」。厂商没开 API，这条堵死。</p>
+    </div>
+    <div class="claim">
+      <span class="claim-k">约束三</span>
+      <h3>唯一的双向信号是我们自己发出的声音</h3>
+      <p>一次成功的 AirPlay 推流，同时证明三件事：设备<b>已开机</b>、<b>在 WiFi 源上</b>、<b>网络通</b>。这是整个系统里唯一既能发又能验的量。</p>
+    </div>
+  </div>
+
+  <div class="pull">
+    <p>推论：把网络流当状态锚点，用它把开环的红外链重新归零。</p>
+  </div>
+
+  <figure>
+  <pre>
+<b>盲按（现状）</b>
+  POWER? ──→ SOURCE? ×n ──→ 落在 WiFi/FM/DAB/BT/AUX 的哪一个？<span class="s">不知道</span>
+
+<b>锚定（本方案）</b>
+  <span class="w">AirPlay 推 0.4s 静音</span> ──成功──→ <b>确知：已开机 + 在 WiFi 源</b>
+                          │
+                          └──→ <span class="s">SOURCE × k</span> ──→ <b>确定落到 FM</b>
+
+  k = WiFi 到 FM 在循环里的距离，是个常数。测一次，永远成立。
+  推流失败 ──→ 设备真的关着 / 掉网。<b>这个失败本身也是有效信息</b>。</pre>
+  <figcaption>锚定不是「多做一步」，而是把不可观测的状态变成可观测的。代价是每次切源前多一次约 0.5 秒的静音推流。</figcaption>
+  </figure>
+
+  <p>这条推论还有一个反过来用的好处：<b>「关机」这个动作本来无法确认</b>（POWER 是 toggle），
+  但按完 POWER 之后再尝试一次锚定 —— <b>锚定失败，恰好就是关机成功的证据</b>。
+  把「无法确认」变成「用另一个通道交叉验证」，是这套设计里最省事的一处。</p>
+</section>
+
+<hr>
+
+<!-- ============ 2. 架构 ============ -->
+<section id="arch">
+  <h2>架构</h2>
+  <p class="sec-note">语音入口和大脑都是现成的，新增的只有右下角那两个执行器。</p>
+
+  <figure>
+  <pre>
+┌─ S31-Korvo（固件几乎不动）─────────────────────────┐
+│ 「你好小智」WakeNet  ── 已实测 9/9                  │
+│   ├ MultiNet 认得 ────→ POST /command    快路径     │
+│   └ 认不出 ──────────→ POST /utterance   兜底       │
+└────────────────────────┬───────────────────────────┘
+                         │ Wi-Fi（服务端靠 UDP 广播发现，不写死 IP）
+┌────────────────────────▼───────────────────────────┐
+│ MBP —— s31_voice/server（<b>本项目全部新代码在这里</b>）    │
+│                                                     │
+│   SenseVoice STT ──── Kokoro TTS v1.1-zh / zm_011   │
+│                （两者已调好，直接复用）              │
+│                                                     │
+│   意图路由：<b>规则 → 拼音兜底 → 本地 LLM</b>              │
+│              微秒级   微秒级      ~1s，仅未命中时     │
+│                                                     │
+│   ┌──────────┬───────────────┬────────────────────┐ │
+│   │ 灯        │ <span class="s">Tivoli · FM</span>   │ <span class="w">Tivoli · 音乐</span>      │ │
+│   │ 已有      │ 红外编排       │ AirPlay 推流       │ │
+│   └────┬─────┴───────┬───────┴─────────┬──────────┘ │
+└────────┼─────────────┼─────────────────┼────────────┘
+         │             │                 │
+    miIO UDP      HA REST →          RAOP <span class="w">:7000</span>
+     ~350ms       ESPHome →           ↑ 网易云直链
+         │        <span class="s">红外 LED</span>            │  队列在我们这边
+   ┌─────▼────┐        │                 │
+   │ MYRKISEL │   ┌────▼─────────────────▼────┐
+   └──────────┘   │   Tivoli M1D Gen 2        │
+                  └───────────────────────────┘
+
+  Home Assistant 在这套里<b>只是红外的传动机构</b>，不是大脑 ——
+  和 s31_voice 现在对待 HA 的方式一致（控灯路径上也没有它）。</pre>
+  <figcaption>沿用 s31_voice 已经验证过的两条原则：不写死任何 IP（靠发现 + 一次真实往返验证），以及慢通道不许挡在快通道前面。</figcaption>
+  </figure>
+</section>
+
+<hr>
+
+<!-- ============ 3. 命令表 ============ -->
+<section id="commands">
+  <h2>要支持的话，和它们各自的命</h2>
+  <p class="sec-note">可行性是按今晚的实测评的，不是按愿望评的。</p>
+
+  <div class="wrap">
+  <table>
+    <thead>
+      <tr><th style="width:24%">说的话</th><th style="width:9%">车道</th><th style="width:42%">怎么实现</th><th>判断</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="t-what">打开收音机 / 听广播</td><td><span class="lane lane-both">锚定</span></td><td>AirPlay 推静音锚定 → <code>SOURCE</code> × k</td><td><span class="tag t-warn">待测 k</span></td></tr>
+      <tr><td class="t-what">下一个电台 / 上一个电台</td><td><span class="lane lane-ir">ir</span></td><td>▲▼ 或 ◀▶ —— 哪一对是调谐待测</td><td><span class="tag t-warn">待测</span></td></tr>
+      <tr><td class="t-what">切到预设三</td><td><span class="lane lane-ir">ir</span></td><td>短按 <code>PRESET 3</code>（<code>0xF10E</code>）</td><td><span class="tag t-ok">码已就绪</span></td></tr>
+      <tr><td class="t-what">把这个台存到预设三</td><td><span class="lane lane-ir">ir</span></td><td>长按 ≈2s = NEC 帧按 108 ms 周期连发</td><td><span class="tag t-warn">需实现</span></td></tr>
+      <tr><td class="t-what">调到 101.7 兆赫</td><td>—</td><td>读不回显示屏，盲数步数必然漂移</td><td><span class="tag t-stop">不做</span></td></tr>
+      <tr><td class="t-what">音量大一点 / 静音</td><td><span class="lane lane-ir">ir</span></td><td><code>VOL±</code> / <code>MUTE</code></td><td><span class="tag t-ok">码已就绪</span></td></tr>
+      <tr><td class="t-what">播放王菲的红豆</td><td><span class="lane lane-net">net</span></td><td>网易云搜索 → 取直链 → RAOP 推流 + 元数据</td><td><span class="tag t-ok">路径清楚</span></td></tr>
+      <tr><td class="t-what">播放我的收藏</td><td><span class="lane lane-net">net</span></td><td><code>likelist</code> → 本地队列 → 逐首推</td><td><span class="tag t-ok">路径清楚</span></td></tr>
+      <tr><td class="t-what">下一首 / 暂停 / 继续</td><td><span class="lane lane-net">net</span></td><td>队列在我们这边，直接控</td><td><span class="tag t-ok">路径清楚</span></td></tr>
+      <tr><td class="t-what">放点适合睡觉的歌</td><td><span class="lane lane-net">net</span></td><td>规则抓不住 → 本地 LLM 出关键词 → 网易云搜歌单</td><td><span class="tag t-new">LLM 层</span></td></tr>
+      <tr><td class="t-what">现在放的是什么</td><td><span class="lane lane-net">net</span></td><td>问我们自己的队列，<b>不是问设备</b>。仅网络源有效</td><td><span class="tag t-ok">路径清楚</span></td></tr>
+      <tr><td class="t-what">关机</td><td><span class="lane lane-both">锚定</span></td><td><code>POWER</code> → 反向锚定探测确认（推流失败 = 已关）</td><td><span class="tag t-ok">见 §1</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<hr>
+
+<!-- ============ 4. 里程碑 ============ -->
+<section id="milestones">
+  <h2>里程碑</h2>
+  <p class="sec-note">接着 s31_voice 现有的 M0–M5 往下编号。M6 是闸门 —— 它不过，后面全是猜的。</p>
+
+  <div class="track">
+
+    <div class="ms gate">
+      <div class="ms-id">M6<span class="ms-est">要出声<br>约 30 分钟</span></div>
+      <div class="ms-body">
+        <div class="ms-lanes"><span class="lane lane-ir">ir</span><span class="lane lane-net">net</span><span class="tag t-warn">闸门</span></div>
+        <h3>一轮出声实测，把所有未知一次砸掉</h3>
+        <p>下面每一条都必须让机器发出声音，所以要挑一个你方便的时间一起做。<b>这是唯一一个我不能自己跑完的里程碑。</b></p>
+        <ul>
+          <li>开机后 Cast <code>:8009</code> 还 RST 吗 —— 决定 Cast 这条路留不留</li>
+          <li>pyatv 用密码往 RAOP 推一段音频，能不能出声、能不能带标题</li>
+          <li>待机状态下直接推流，能不能把它唤醒（<code>keepAliveLowPower</code> 说应该能）</li>
+          <li>推流成功后，源确实停在 WiFi 吗</li>
+          <li>数一遍 SOURCE 循环：本机到底有没有 DAB，得出常数 <b>k</b></li>
+          <li>▲▼ 和 ◀▶ 在 FM 下分别是什么</li>
+          <li>NEC 帧连发多久能触发「长按存台」</li>
+          <li>Tivoli 放着音乐时叫「你好小智」，扫一条音量 vs 唤醒率曲线</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="ms">
+      <div class="ms-id">M7<span class="ms-est">半天</span></div>
+      <div class="ms-body">
+        <div class="ms-lanes"><span class="lane lane-ir">ir</span></div>
+        <h3>Tivoli 执行器骨架 + 锚定原语</h3>
+        <p>服务端从「只有一个 <code>LightExecutor</code>」改成设备注册表，新增 <code>TivoliExecutor</code>。</p>
+        <ul>
+          <li><code>anchor()</code> —— 推静音、验成功、返回「已锚定到 WiFi」</li>
+          <li>红外走 HA REST 打 <code>button.tivoli_ir_*</code>，复用现成的 <code>ha.py</code></li>
+          <li>影子状态：源、最后一次锚定时间、当前预设；每次锚定重新归零</li>
+          <li>NEC 长按连发（M6 测出的时长写进 <code>tivoli_ir.yaml</code> 的脚本）</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="ms">
+      <div class="ms-id">M8<span class="ms-est">1–2 天</span></div>
+      <div class="ms-body">
+        <div class="ms-lanes"><span class="lane lane-net">net</span></div>
+        <h3>音乐链路：网易云 → RAOP</h3>
+        <p>本机跑 NeteaseCloudMusicApi（Node 已装，v23.9），你扫码登录一次，cookie 落在 gitignore 里。</p>
+        <ul>
+          <li>搜索 / 歌单 / 我喜欢的音乐 / 取播放直链</li>
+          <li>队列管理在我们这边 —— 直链有时效，必须在播之前才取</li>
+          <li>pyatv 推流 + 推元数据（标题/歌手会显示在 Tivoli 的屏上）</li>
+          <li>无版权 / VIP 曲目降级：换同名其他版本，还不行就说清楚为什么</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="ms">
+      <div class="ms-id">M9<span class="ms-est">半天</span></div>
+      <div class="ms-body">
+        <div class="ms-lanes"><span class="lane lane-ir">ir</span><span class="lane lane-net">net</span></div>
+        <h3>FM 编排</h3>
+        <p>把 M6 量出来的常数变成确定性的动作序列。</p>
+        <ul>
+          <li>「打开收音机」= 锚定 → SOURCE × k → （可选）叫回上次的预设</li>
+          <li>「存到预设 n」= 长按序列 + 影子状态记账</li>
+          <li>预设起中文名（<code>预设三 = 音乐之声</code>），让「放音乐之声」也能用</li>
+          <li>「关机」= POWER + 反向锚定确认</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="ms">
+      <div class="ms-id">M10<span class="ms-est">1 天</span></div>
+      <div class="ms-body">
+        <div class="ms-lanes"><span class="lane lane-both">意图</span></div>
+        <h3>意图层扩展 + 本地 LLM 兜底</h3>
+        <p>沿用 <code>intent.py</code> 现有的三层结构，只是从「一盏灯」扩到「三个设备」。</p>
+        <ul>
+          <li>先加设备消歧：句子里没提设备时，按「上一次操作的设备」定向</li>
+          <li>规则层扩 FM / 音乐；拼音层跟着扩（中文短指令的错基本都是同音）</li>
+          <li>板上 MultiNet 词表加高频短语 —— <b>按 §4.1.3 的教训，新词一律先跑 <code>mn_regress.sh</code></b></li>
+          <li>Ollama + Qwen3-4B(4bit) 作第三层，<b>硬超时 1.5 s</b>，绝不挡在规则前面</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="ms">
+      <div class="ms-id">M11<span class="ms-est">半天</span></div>
+      <div class="ms-body">
+        <div class="ms-lanes"><span class="lane lane-net">net</span></div>
+        <h3>回话有声：拿 Tivoli 当板子的喇叭</h3>
+        <p>板子没有喇叭，但屋里最好的喇叭就在眼前。Kokoro 合成的回话直接 RAOP 推给 Tivoli。</p>
+        <ul>
+          <li>音乐播放中：记位置 → 播回话 → 续播</li>
+          <li>FM 模式下不能这么干（推流会把源抢走）—— 那时仍用 RGB 灯反馈</li>
+          <li>顺带把 <code>CONFIG_S31_HAS_SPEAKER</code> 那条分支的语义理清楚</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<hr>
+
+<!-- ============ 5. 风险 ============ -->
+<section id="risks">
+  <h2>风险</h2>
+  <p class="sec-note">按「会不会让整条链哑掉」排序，不按发生概率排。</p>
+
+  <div class="risks">
+
+    <div class="risk">
+      <div class="risk-id">R1</div>
+      <div>
+        <h3>Cast 打不通 <span class="lane lane-net">net</span></h3>
+        <p><code>:8009</code> 四个 TLS 版本全被 RST。最可能是待机导致接收端没起，但也可能是这块 Libre 模块的 Cast 实现根本不接受第三方 sender。</p>
+        <p><span class="mit">缓解</span>影响可控 —— AirPlay 今晚已经验活（<code>/info</code> 200），本方案<b>本来就把 AirPlay 当主路</b>，Cast 只是「如果能用就更省事」（设备自己去拉流，MBP 不用当中转）。M6 一测便知。</p>
+      </div>
+    </div>
+
+    <div class="risk">
+      <div class="risk-id">R2</div>
+      <div>
+        <h3>放着音乐时叫不醒 <span class="lane lane-both">声学</span></h3>
+        <p>s31 实测唤醒率在 SNR 10 dB 还是 6/6，掉到 5 dB 就只剩 1/6 —— <b>是悬崖不是缓坡</b>。Tivoli 一响，Korvo 大概率就聋了。这是全表里最硬的一条。</p>
+        <p><span class="mit">缓解</span>音乐是<b>我们</b>推的，所以音量归我们管：可以给「语音优先」设一个音量上限。真正的解法是 AFE 降噪 / 多麦，但那要先有嘈杂环境的回归 —— M6 先用 <code>wake_bench.py</code> 把干扰源从粉红噪声换成真实音乐，扫出曲线再决定值不值得投入。</p>
+      </div>
+    </div>
+
+    <div class="risk">
+      <div class="risk-id">R3</div>
+      <div>
+        <h3>SOURCE 循环长度未知 <span class="lane lane-ir">ir</span></h3>
+        <p>本机有没有 DAB 决定了常数 k 是 1 还是 2。猜错的话每次「打开收音机」都会落到隔壁源上。</p>
+        <p><span class="mit">缓解</span>M6 数一遍就完了。数完写进配置，不写进代码。</p>
+      </div>
+    </div>
+
+    <div class="risk">
+      <div class="risk-id">R4</div>
+      <div>
+        <h3>长按存台的红外时序未知 <span class="lane lane-ir">ir</span></h3>
+        <p>设备判定「长按」用的是重复帧计数还是持续时长，不看固件不知道。ESPHome 侧要么发 N 个完整 NEC 帧，要么发首帧 + NEC 重复码。</p>
+        <p><span class="mit">缓解</span>两种都试，以屏幕上出现确认提示为准。这条失败最多是少一个功能，不影响其他。</p>
+      </div>
+    </div>
+
+    <div class="risk">
+      <div class="risk-id">R5</div>
+      <div>
+        <h3>网易云这条路会腐化 <span class="lane lane-net">net</span></h3>
+        <p>cookie 会过期、接口会变、曲目会下架、VIP 会拦。这是全表里唯一一条<b>会随时间自己坏掉</b>的。</p>
+        <p><span class="mit">缓解</span>失败必须说人话（「这首要会员」而不是「播放失败」），并且降级路径要明确。另外把网易云那层隔离成单独模块，坏了不牵连 FM 和灯。</p>
+      </div>
+    </div>
+
+    <div class="risk">
+      <div class="risk-id">R6</div>
+      <div>
+        <h3>16 GB 装不下所有常驻 <span class="lane lane-both">资源</span></h3>
+        <p>SenseVoice ≈1.2 G + Kokoro ≈0.5 G + Qwen3-4B ≈3 G + HA 容器 ≈1 G + 系统 ≈4 G ≈ <b>10 G / 16 G</b>。留有余量，但开着 Chrome 就没那么宽裕了。磁盘只剩 33 GB 也要盯着。</p>
+        <p><span class="mit">缓解</span>选 4B 而不是 7B 就是为这个。LLM 按需加载 + 空闲卸载，别常驻。</p>
+      </div>
+    </div>
+
+    <div class="risk">
+      <div class="risk-id">R7</div>
+      <div>
+        <h3>AirPlay 密码在局域网上是明文的 <span class="lane lane-net">net</span></h3>
+        <p><code>http://192.168.0.107/index.asp</code> 把 AirPlay 密码直接写在返回的 HTML 里，同网段任何人打开就能看到。这是设备固件的问题，不是我们引入的。</p>
+        <p><span class="mit">缓解</span>要么改一个你不在别处用的密码，要么清空（等于关掉 AirPlay 鉴权）。我没有动它 —— 这是你的决定。</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<hr>
+
+<!-- ============ 6. 不做 ============ -->
+<section id="scope">
+  <h2>明确不做</h2>
+  <p class="sec-note">写下来是为了以后不再重新讨论一遍。</p>
+
+  <div class="nots">
+    <div class="not"><b>绝对频率调谐</b><span>「调到 101.7」读不回显示屏，盲数步数必然漂移。改用预设 + 中文台名覆盖同样的需求。</span></div>
+    <div class="not"><b>DAB</b><span>本机大概率没有；就算有，国内也没有可听的内容。</span></div>
+    <div class="not"><b>多房间同步</b><span>只有一台设备。AirPlay 2 支持，但没有第二只音箱可验，做了也是空转。</span></div>
+    <div class="not"><b>打断回话</b><span>要 AEC。板子的参考通道虽然现成（§4.1.7 的 DAC 回环），但回话现在从 Tivoli 出，板子的电声参考对不上那路声音。</span></div>
+    <div class="not"><b>把 HA 当大脑</b><span>HA 在这套里只是红外的传动机构。和 s31_voice 对待控灯的方式一致 —— 快路径上不放慢组件。</span></div>
+    <div class="not"><b>云端 LLM</b><span>你要求优先本地。规则层能覆盖的部分本来也不该过模型。</span></div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ============ 7. 待你决定 ============ -->
+<section id="asks">
+  <h2>需要你拍板的</h2>
+  <p class="sec-note">前三个你已经选过了（网易云 API + 直链 · 本机 SenseVoice/Kokoro · Ollama + Qwen3-4B）。剩下这些不定我也能先写代码，但会先按括号里的默认值走。</p>
+
+  <div class="asks">
+    <div class="ask">
+      <h3>M6 什么时候做？</h3>
+      <p>它必须让机器出声（开关机、切源、放音乐、对着板子说话），而且要在相对安静的环境（声学那条会被屋里人声污染，§5 记过一次教训）。这是唯一挡住后面全部工作的一步。</p>
+    </div>
+    <div class="ask">
+      <h3>网易云账号登录方式</h3>
+      <p>扫码还是手机号验证码？cookie 我会写进 <code>s31_voice/server/.env</code> 旁边并加进 gitignore，和 <code>MIIO_TOKEN</code> 一样的待遇。（默认：扫码）</p>
+    </div>
+    <div class="ask">
+      <h3>常听哪几个 FM 台</h3>
+      <p>预设 1–6 起中文名之后，「放音乐之声」这类说法才成立，比「切到预设三」自然得多。你报台名，我来配。</p>
+    </div>
+    <div class="ask">
+      <h3>AirPlay 密码怎么处理</h3>
+      <p>见 R7。改一个专用的、清空、还是就这样。（默认：不动，我在代码里从配置读，不硬编码）</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  s31_voice · Tivoli Audio Model One Digital Gen 2 · 路线图 v1 · 2026-09-10<br>
+  事实核查一栏全部为当日实测；未实测的项已在表内标注「待测」。
+</footer>
+
+</div>
