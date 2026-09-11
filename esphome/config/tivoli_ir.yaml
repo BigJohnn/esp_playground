@@ -44,6 +44,24 @@ remote_transmitter:
 # All commands share NEC address 0x6B86. Captured from the original
 # Tivoli Audio remote 2026-09-09..2026-09-10; every command byte pair
 # passes the NEC low = ~high checksum.
+# The radio distinguishes a short press from a press-and-hold (hold = save the
+# current station into a preset). A NEC remote expresses "still held" by
+# repeating, so we emulate a hold by re-sending the full frame on the ~108 ms
+# NEC frame period. How many frames the radio wants before it calls it a hold is
+# a property of its firmware, so hold_frames is a runtime number, not a
+# constant: sweeping it is a dial-turn, not a reflash.
+number:
+  - platform: template
+    name: "Hold Frames"
+    id: hold_frames
+    optimistic: true
+    restore_value: true
+    initial_value: 18
+    min_value: 1
+    max_value: 60
+    step: 1
+    mode: box
+
 script:
   - id: send_ir
     parameters:
@@ -53,6 +71,34 @@ script:
           address: 0x6B86
           command: !lambda return cmd;
           command_repeats: 1
+
+  # Emulating a press-and-hold. The first attempt re-sent the whole NEC frame on
+  # the 108 ms period; the radio read every frame as a separate short press and
+  # just recalled the preset seven times in a row (measured 2026-09-11, frame
+  # counts 8 through 45, no save at any of them). A real remote does not repeat
+  # the frame while a key is held -- it sends the frame once and then emits NEC
+  # "ditto" codes: a 9 ms mark, a 2.25 ms space, one 560 us mark, and nothing
+  # else until the next 108 ms boundary. That is what the radio counts.
+  #
+  # transmit_raw rather than transmit_nec because ESPHome's NEC action can only
+  # repeat the full frame, which is the thing that does not work here. Each raw
+  # burst below sums to exactly 108000 us, so consecutive repeats land on the
+  # correct period without an extra delay.
+  - id: send_ir_hold
+    parameters:
+      cmd: int
+    then:
+      - remote_transmitter.transmit_nec:
+          address: 0x6B86
+          command: !lambda return cmd;
+          command_repeats: 1
+      - delay: 40ms
+      - repeat:
+          count: !lambda return (int) id(hold_frames).state;
+          then:
+            - remote_transmitter.transmit_raw:
+                carrier_frequency: 38kHz
+                code: [9000, -2250, 560, -96190]
 
 button:
   - platform: template
@@ -224,4 +270,59 @@ button:
     on_press:
       - script.execute:
           id: send_ir
+          cmd: 0xE01F
+
+
+  - platform: template
+    name: "Preset 1 Hold"
+    id: btn_preset_1_hold
+    icon: mdi:content-save-outline
+    on_press:
+      - script.execute:
+          id: send_ir_hold
+          cmd: 0xF708
+
+  - platform: template
+    name: "Preset 2 Hold"
+    id: btn_preset_2_hold
+    icon: mdi:content-save-outline
+    on_press:
+      - script.execute:
+          id: send_ir_hold
+          cmd: 0xF00F
+
+  - platform: template
+    name: "Preset 3 Hold"
+    id: btn_preset_3_hold
+    icon: mdi:content-save-outline
+    on_press:
+      - script.execute:
+          id: send_ir_hold
+          cmd: 0xF10E
+
+  - platform: template
+    name: "Preset 4 Hold"
+    id: btn_preset_4_hold
+    icon: mdi:content-save-outline
+    on_press:
+      - script.execute:
+          id: send_ir_hold
+          cmd: 0xF609
+
+  - platform: template
+    name: "Preset 5 Hold"
+    id: btn_preset_5_hold
+    icon: mdi:content-save-outline
+    on_press:
+      - script.execute:
+          id: send_ir_hold
+          cmd: 0xEC13
+
+  - platform: template
+    name: "Preset 6 Hold"
+    id: btn_preset_6_hold
+    icon: mdi:content-save-outline
+    on_press:
+      - script.execute:
+          id: send_ir_hold
           cmd: 0xE01F
