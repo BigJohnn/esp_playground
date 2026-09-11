@@ -36,6 +36,7 @@ remote_receiver:
   dump: all
 
 remote_transmitter:
+  id: ir_tx
   pin: GPIO4
   carrier_duty_percent: 50%
   non_blocking: true
@@ -72,18 +73,27 @@ script:
           command: !lambda return cmd;
           command_repeats: 1
 
-  # Emulating a press-and-hold. The first attempt re-sent the whole NEC frame on
-  # the 108 ms period; the radio read every frame as a separate short press and
-  # just recalled the preset seven times in a row (measured 2026-09-11, frame
-  # counts 8 through 45, no save at any of them). A real remote does not repeat
-  # the frame while a key is held -- it sends the frame once and then emits NEC
-  # "ditto" codes: a 9 ms mark, a 2.25 ms space, one 560 us mark, and nothing
-  # else until the next 108 ms boundary. That is what the radio counts.
+  # Emulating a press-and-hold. Two earlier attempts failed, both measured:
   #
-  # transmit_raw rather than transmit_nec because ESPHome's NEC action can only
-  # repeat the full frame, which is the thing that does not work here. Each raw
-  # burst below sums to exactly 108000 us, so consecutive repeats land on the
-  # correct period without an extra delay.
+  #   1. Re-sending the whole NEC frame on the 108 ms period. The radio read
+  #      every frame as a separate short press and just recalled the preset over
+  #      and over (frame counts 8..45, no save at any of them).
+  #   2. Sending NEC "ditto" codes, but as N separate transmit_raw actions in a
+  #      repeat loop. Also no save.
+  #
+  # Capturing the real remote settled it. A short press is one NEC frame plus a
+  # single ditto; a press-and-hold is one frame followed by a continuous run of
+  # dittos -- about 18 of them over 1.84 s. The ditto measured off the real
+  # remote is 9125 us of carrier, 2314 us of silence, then one 526 us mark,
+  # which is within a few percent of what attempt 2 sent. So the waveform was
+  # never the problem; the delivery was. The transmitter runs non_blocking, so
+  # each separate transmit_raw got queued and rescheduled independently and the
+  # 108 ms cadence came apart between them -- and cadence is exactly what the
+  # radio counts.
+  #
+  # Hence one single transmission carrying every ditto, built here rather than
+  # declared: inside one transmit call the timings are emitted back-to-back with
+  # no scheduler in between.
   - id: send_ir_hold
     parameters:
       cmd: int
@@ -92,13 +102,17 @@ script:
           address: 0x6B86
           command: !lambda return cmd;
           command_repeats: 1
-      - delay: 40ms
-      - repeat:
-          count: !lambda return (int) id(hold_frames).state;
-          then:
-            - remote_transmitter.transmit_raw:
-                carrier_frequency: 38kHz
-                code: [9000, -2250, 560, -96190]
+      - lambda: |-
+          auto call = id(ir_tx).transmit();
+          auto *data = call.get_data();
+          data->set_carrier_frequency(38000);
+          const int n = (int) id(hold_frames).state;
+          for (int i = 0; i < n; i++) {
+            // 9125 + 2314 + 526 + 96035 = 108000 us, the NEC repeat period
+            data->item(9125, 2314);
+            data->item(526, 96035);
+          }
+          call.perform();
 
 button:
   - platform: template
