@@ -15,8 +15,10 @@
 代价说清楚：
   1. **切走 AirPlay 会拆掉连接**，而且 `SwitchAudioSource` 没法再切回去
      （macOS 不给命令行选 AirPlay 目标的口子）。所以这里**永不主动切走**。
-  2. 同理，Tivoli 一断电链路就废，要人手在控制中心重选。IR 的 POWER 是
-     **硬断电**不是待机（WiFi 一起掉，重新入网 28 秒），所以默认不碰 POWER。
+  2. Tivoli 一断电链路就废，而且**用红外把源从 WiFi 切到 FM 也会断**，
+     切回 WiFi 之后 macOS 也不会自动重连（实测等 30 秒不回来）。
+     所以 anchor() 会在链路断掉时自动调 tools/airplay_relink.sh 去点控制中心。
+     IR 的 POWER 是**硬断电**不是待机（WiFi 一起掉，重新入网 28 秒），默认不碰。
   3. 拿不到"歌名显示在 Tivoli 屏上"那个功能 —— afplay 不送元数据。
   4. 系统音量就是 Tivoli 的音量，两者是同一个旋钮。
 
@@ -37,6 +39,10 @@ _LOG = logging.getLogger("airplay")
 # （实测 …-941178834869875-Audio -> …-942337989194583-Audio），只有名字是稳定的。
 _DEVICE_NAME = os.environ.get("AIRPLAY_OUTPUT_NAME", "AirPlay")
 _SWITCH = shutil.which("SwitchAudioSource") or "/opt/homebrew/bin/SwitchAudioSource"
+# 链路断了之后重新挂上去的脚本。CoreAudio 那层没有命令行能选 AirPlay 目标
+# （断开之后这个设备干脆就不在 SwitchAudioSource 的列表里），只剩 UI 脚本这一条路。
+_RELINK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "tools", "airplay_relink.sh")
 # 设备掉电之后这个虚拟设备还会赖在列表里 30 秒以上（实测），
 # 所以"在不在列表里"**不能**当存活判据 —— 存活判据是 ping/TCP。
 _PROBE_PORT = 7000
@@ -101,6 +107,27 @@ class AirPlay:
             return False
         return code == 0 and _DEVICE_NAME in out.splitlines()
 
+    async def relink(self, timeout: float = 60.0) -> bool:
+        """把系统输出重新挂回 Tivoli。靠 UI 脚本点控制中心，慢（几秒到十几秒）。
+
+        慢是因为设备名**没有暴露给辅助功能**（macOS 26.2 实测：AXTitle/AXDescription
+        全空），只能一个个点、点完回头问 SwitchAudioSource 当前输出变成了谁。
+        所以这个不能放在快路径上 —— 它是"要放音乐了，先把路铺好"那一步。
+        """
+        try:
+            code, out = await _run("/bin/bash", _RELINK, timeout=timeout)
+        except asyncio.TimeoutError:
+            _LOG.warning("重挂 AirPlay 超时（%.0fs）", timeout)
+            return False
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("重挂 AirPlay 出错：%s", exc)
+            return False
+        if code != 0:
+            _LOG.warning("重挂 AirPlay 失败：%s", out.splitlines()[-1] if out else code)
+            return False
+        _LOG.info("AirPlay 已重挂：%s", out.splitlines()[-1] if out else "")
+        return True
+
     async def current_output(self) -> str:
         try:
             _, out = await _run(_SWITCH, "-c", "-t", "output", timeout=5)
@@ -127,9 +154,13 @@ class AirPlay:
                       (time.perf_counter() - t0) * 1000)
             return False
         if not await self.linked():
-            _LOG.warning("设备活着，但 macOS 这头的 AirPlay 链路断了 —— "
-                         "要在控制中心重新选一次 Tivoli（没有命令行办法，实测过）")
-            return False
+            # 链路断了。这在正常使用里很常见 —— 只要用红外切过一次源（去听 FM），
+            # 回来就是断的。所以这里不报错，直接去修：点控制中心把它挂回来。
+            _LOG.info("AirPlay 链路断了，自动重挂……")
+            if not await self.relink():
+                _LOG.warning("重挂失败 —— 多半是辅助功能权限没给，"
+                             "见 tools/airplay_relink.sh 开头的说明")
+                return False
         self._last_ok = time.time()
         _LOG.info("锚定成功（%.0fms）—— 设备在线且链路通", (time.perf_counter() - t0) * 1000)
         return True
