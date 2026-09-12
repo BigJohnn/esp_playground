@@ -97,10 +97,22 @@ for attempt in 1 2 3; do
     sleep 1.2
 done
 if ! [[ "$N" =~ ^[0-9]+$ ]] || [ "$N" -le 1 ]; then
-    echo "试了 3 次都打不开声音面板。" >&2
-    echo "如果是第一次跑：系统设置 → 隐私与安全性 → 辅助功能，" >&2
-    echo "把**运行这个脚本的那个程序**打勾（不一定是终端 —— 从 VS Code 的" >&2
-    echo "集成终端里跑的话要勾 Visual Studio Code）。" >&2
+    # 打不开面板有两个完全不同的原因，**报错前先分清楚**。
+    # 之前这里无条件让人去开辅助功能权限，结果 2026-09-12 权限明明是好的
+    # （System Events 能正常读出 ControlCenter 的 14 个菜单栏项、第 5 个就是
+    # 控制中心），面板就是点不开 —— 我照着这条错误提示去查了一个没坏的设置。
+    # 能读 UI 和能点 UI 是同一个权限，所以"读得到"就等于"权限没问题"。
+    if osascript -e 'tell application "System Events" to tell process "ControlCenter" to return (count of menu bar items of menu bar 1)' >/dev/null 2>&1; then
+        echo "辅助功能权限是好的（能读到控制中心的菜单栏），但点它不出面板。" >&2
+        echo "实测这种情况是 GUI 会话点不动：屏幕锁着、显示器睡了、" >&2
+        echo "或者人在远程桌面里而本机没有活跃的图形会话。" >&2
+        echo "解掉锁屏/唤醒显示器再跑；或者直接自己点一下" >&2
+        echo "控制中心 → 声音 → $TARGET，三秒的事。" >&2
+        exit 3
+    fi
+    echo "System Events 连控制中心都读不到 —— 这才是权限问题。" >&2
+    echo "系统设置 → 隐私与安全性 → 辅助功能，把**运行这个脚本的那个程序**打勾" >&2
+    echo "（不一定是终端 —— 从 VS Code 的集成终端里跑的话要勾 Visual Studio Code）。" >&2
     exit 2
 fi
 
