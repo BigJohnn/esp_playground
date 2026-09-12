@@ -74,6 +74,20 @@ def weapi(payload: dict) -> dict:
 # ---------------------------------------------------------------- 数据
 
 @dataclass
+class PlayInfo:
+    """一条直链，以及它是不是完整的。"""
+    url: str
+    ms: int = 0              # 这个文件的真实时长
+    trial_seconds: int = 0   # >0 表示是试听片段，只有这么长
+    fee: int = 0
+    payed: int = 0
+
+    @property
+    def is_trial(self) -> bool:
+        return self.trial_seconds > 0
+
+
+@dataclass
 class Song:
     id: int
     name: str
@@ -266,19 +280,43 @@ class Netease:
     async def url(self, song_id: int, br: int = 320000) -> str | None:
         """取播放直链。**必须在真要播之前才取** —— 这个链接是有时效的，
         提前给整条队列取好，等放到第十首时前面九个都过期了。"""
-        urls = await self.urls([song_id], br)
-        return urls.get(int(song_id))
+        info = (await self.play_info([song_id], br)).get(int(song_id))
+        return info.url if info else None
 
-    async def urls(self, ids: list[int], br: int = 320000) -> dict[int, str]:
+    async def play_info(self, ids: list[int], br: int = 320000) -> dict[int, "PlayInfo"]:
+        """取直链**以及它到底是什么**。
+
+        只取 url 是不够的 —— VIP 曲目在未登录/无会员时**照样给 url**，
+        但给的是三四十秒的试听片段。2026-09-12 踩到：王菲的《红豆》元数据写着
+        260 秒，下回来的文件只有 45 秒，播到 45 秒戛然而止，而代码一路报成功。
+        接口其实明说了（`freeTrialInfo` 非空、`time` 是真实时长），是我没读。
+        """
         if not ids:
             return {}
         data = await self._post("/weapi/song/enhance/player/url",
                                 {"ids": json.dumps([int(x) for x in ids]), "br": br})
-        out: dict[int, str] = {}
+        out: dict[int, PlayInfo] = {}
         for d in (data.get("data") or []):
-            if d.get("url"):
-                out[int(d["id"])] = str(d["url"])
+            if not d.get("url"):
+                continue
+            trial = d.get("freeTrialInfo") or None
+            out[int(d["id"])] = PlayInfo(
+                url=str(d["url"]),
+                ms=int(d.get("time") or 0),
+                trial_seconds=int(trial.get("end") or 0) if isinstance(trial, dict) else 0,
+                fee=int(d.get("fee") or 0),
+                payed=int(d.get("payed") or 0),
+            )
         return out
+
+    async def urls(self, ids: list[int], br: int = 320000) -> dict[int, str]:
+        return {k: v.url for k, v in (await self.play_info(ids, br)).items()}
+
+    @staticmethod
+    def why_trial(song: Song, info: "PlayInfo") -> str:
+        """试听片段要说清楚为什么，以及怎么解决 —— 光说"播放失败"没用。"""
+        return (f"《{song.name}》要会员，只给了{info.trial_seconds}秒试听。"
+                f"用有会员的账号登录网易云就能听完整版")
 
     @staticmethod
     def why_no_url(song: Song) -> str:
