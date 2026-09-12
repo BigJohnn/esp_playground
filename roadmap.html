@@ -115,6 +115,25 @@ body {
 /* ---------- 刊头 ---------- */
 
 .masthead { padding: 72px 0 0; }
+.revised {
+  margin: 34px 0 0;
+  padding: 20px 24px;
+  border-left: 3px solid var(--signal);
+  background: var(--signal-bg);
+  border-radius: 0 4px 4px 0;
+}
+.revised-label {
+  font-family: var(--f-mono);
+  font-size: .74rem;
+  letter-spacing: .10em;
+  text-transform: uppercase;
+  color: var(--signal);
+  margin: 0 0 .6em;
+}
+.revised p { margin: 0 0 .7em; font-size: .93rem; }
+.revised p:last-child { margin-bottom: 0; }
+.revised ul { margin: .5em 0 .9em; padding-left: 1.15em; font-size: .91rem; }
+.revised li { margin-bottom: .34em; }
 
 .eyebrow {
   font-family: var(--f-mono);
@@ -516,7 +535,7 @@ footer {
 <div class="page">
 
 <header class="masthead">
-  <p class="eyebrow">Tivoli Audio Model One Digital Gen 2 · 语音控制 · 2026-09-10</p>
+  <p class="eyebrow">Tivoli Audio Model One Digital Gen 2 · 语音控制 · v2 · 2026-09-12</p>
   <h1>把一台只认红外的收音机<br>接进语音链路</h1>
   <p class="standfirst">
     这台机器有两副面孔：一副是 19 个红外码，能按但读不回来；另一副是 AirPlay 2 和
@@ -534,6 +553,21 @@ footer {
     <span>模块 <b>Libre Wireless LS1.5</b></span>
     <span>语音入口 <b>S31-Korvo</b></span>
     <span>大脑 <b>MBP M1 Pro / 16 GB</b></span>
+  </div>
+  <div class="revised">
+    <p class="revised-label">v2 · 实测之后</p>
+    <p>v1 是动手之前的设计。2026-09-11 跑完 M6（那一轮必须让机器出声的实测）之后，
+    <b>下面这几条被推翻了</b> —— 原文保留着，好让「当初以为」和「后来是」能对照着看：</p>
+    <ul>
+      <li><b>锚定不再用 pyatv 推 RAOP。</b>pyatv 在 RAOP 上从不给 RTSP 开加密，而这台严格的 AirPlay 2 接收端配对完就要求加密通道 —— 明文 <code>SETUP</code> 被直接丢弃。改走 macOS 自己的 AirPlay 栈</li>
+      <li><b>Google Cast 彻底作废。</b>开机状态下复测依然全 TLS 版本 RST，不是待机的锅</li>
+      <li><b>「下一个电台」做不到。</b>手册确认自动搜台只有机身旋钮能做，遥控器没这个键</li>
+      <li><b>长按存台是 toggle 不是覆盖</b>，而且要发 NEC 重复码、整串必须一次发完</li>
+      <li><b>回话改从板子自己的喇叭出</b>，不推给 Tivoli —— 不依赖音响开着，也不依赖 AirPlay 链路活着</li>
+      <li><b>手册的源循环顺序是错的</b>。实测 <code>wifi → aux → bt → fm</code>，无 DAB</li>
+    </ul>
+    <p>还活着的是最核心的那条：<b>锚定这个想法本身成立</b> —— 只是它的实现换了一副身体，
+    并且从「传感器 + 执行器」降级成了偏执行器。</p>
   </div>
 </header>
 
@@ -560,13 +594,13 @@ footer {
       </tr>
       <tr>
         <td class="t-what">AirPlay 2 <span class="lane lane-net">net</span></td>
-        <td><b>活着</b>。<code>:7000</code> 应答 200；<code>keepAliveLowPower=true</code> —— <b>待机时网络仍在，可被网络流唤醒</b>；需要密码</td>
-        <td><code>/info</code> + mDNS TXT <code>pw=true</code></td>
+        <td><b>活着，但只有 macOS 自己的栈推得动</b>。pyatv 走到 <code>SETUP</code> 就断（它在 RAOP 上从不给 RTSP 开加密，而这台严格的 AirPlay 2 接收端配对完就要求加密通道）。<code>keepAliveLowPower=true</code> <b>有误导性</b> —— IR 的 POWER 是硬断电，WiFi 一起掉，重新入网 28 秒</td>
+        <td>pyatv 三种配置 + 手写裸 RTSP（<code>ANNOUNCE</code> 200 / <code>SETUP</code> 403）</td>
       </tr>
       <tr>
         <td class="t-what">Google Cast <span class="lane lane-net">net</span></td>
-        <td><span class="tag t-warn">存疑</span> <code>:8009</code> TCP 能连，但 TLS1.0/1.1/1.2/1.3 四个版本全部在握手时被 <code>RST</code>；<code>:8008/setup/eureka_info</code> 返回空</td>
-        <td><code>openssl s_client</code> 四轮 + pychromecast 两种连法</td>
+        <td><span class="tag t-stop">作废</span> <code>:8009</code> 在<b>待机和开机两种状态下</b>都对所有 TLS 版本一律 <code>RST</code>。R1 就此定案，这条路不存在</td>
+        <td>待机 + 开机各复测一轮</td>
       </tr>
       <tr>
         <td class="t-what">Spotify Connect</td>
@@ -697,7 +731,7 @@ footer {
 │   └────┬─────┴───────┬───────┴─────────┬──────────┘ │
 └────────┼─────────────┼─────────────────┼────────────┘
          │             │                 │
-    miIO UDP      HA REST →          RAOP <span class="w">:7000</span>
+    miIO UDP      HA REST →      macOS AirPlay <span class="w">栈</span>
      ~350ms       ESPHome →           ↑ 网易云直链
          │        <span class="s">红外 LED</span>            │  队列在我们这边
    ┌─────▼────┐        │                 │
@@ -725,7 +759,7 @@ footer {
     </thead>
     <tbody>
       <tr><td class="t-what">打开收音机 / 听广播</td><td><span class="lane lane-both">锚定</span></td><td>AirPlay 推静音锚定 → <code>SOURCE</code> × k</td><td><span class="tag t-warn">待测 k</span></td></tr>
-      <tr><td class="t-what">下一个电台 / 上一个电台</td><td><span class="lane lane-ir">ir</span></td><td>▲▼ 或 ◀▶ —— 哪一对是调谐待测</td><td><span class="tag t-warn">待测</span></td></tr>
+      <tr><td class="t-what">下一个电台 / 上一个电台</td><td><span class="lane lane-ir">ir</span></td><td>手册确认：自动搜台<b>只有机身旋钮能做</b>，遥控器没这个键。方向键只是 ±0.05MHz 微调</td><td><span class="tag t-stop">做不到</span></td></tr>
       <tr><td class="t-what">切到预设三</td><td><span class="lane lane-ir">ir</span></td><td>短按 <code>PRESET 3</code>（<code>0xF10E</code>）</td><td><span class="tag t-ok">码已就绪</span></td></tr>
       <tr><td class="t-what">把这个台存到预设三</td><td><span class="lane lane-ir">ir</span></td><td>长按 ≈2s = NEC 帧按 108 ms 周期连发</td><td><span class="tag t-warn">需实现</span></td></tr>
       <tr><td class="t-what">调到 101.7 兆赫</td><td>—</td><td>读不回显示屏，盲数步数必然漂移</td><td><span class="tag t-stop">不做</span></td></tr>
@@ -751,21 +785,22 @@ footer {
   <div class="track">
 
     <div class="ms gate">
-      <div class="ms-id">M6<span class="ms-est">要出声<br>约 30 分钟</span></div>
+      <div class="ms-id">M6<span class="ms-est">已完成<br>2026-09-11</span></div>
       <div class="ms-body">
         <div class="ms-lanes"><span class="lane lane-ir">ir</span><span class="lane lane-net">net</span><span class="tag t-warn">闸门</span></div>
         <h3>一轮出声实测，把所有未知一次砸掉</h3>
-        <p>下面每一条都必须让机器发出声音，所以要挑一个你方便的时间一起做。<b>这是唯一一个我不能自己跑完的里程碑。</b></p>
+        <p><b>跑完了，而且推翻了本文档原来一半的假设。</b>下面保留原来要测的清单，每条后面是实测结果 —— 保留原问题是为了让「当初以为」和「后来是」能对照着看。</p>
         <ul>
-          <li>开机后 Cast <code>:8009</code> 还 RST 吗 —— 决定 Cast 这条路留不留</li>
-          <li>pyatv 用密码往 RAOP 推一段音频，能不能出声、能不能带标题</li>
-          <li>待机状态下直接推流，能不能把它唤醒（<code>keepAliveLowPower</code> 说应该能）</li>
-          <li>推流成功后，源确实停在 WiFi 吗</li>
-          <li>数一遍 SOURCE 循环：本机到底有没有 DAB，得出常数 <b>k</b></li>
-          <li>▲▼ 和 ◀▶ 在 FM 下分别是什么</li>
-          <li>NEC 帧连发多久能触发「长按存台」</li>
-          <li>Tivoli 放着音乐时叫「你好小智」，扫一条音量 vs 唤醒率曲线</li>
+          <li>开机后 Cast <code>:8009</code> 还 RST 吗 → <b>还 RST。作废。</b></li>
+          <li>pyatv 用密码往 RAOP 推一段音频 → <b>推不动</b>。pyatv 在 RAOP 上不给 RTSP 开加密，这台接收端配对完就要求加密通道，明文 <code>SETUP</code> 被直接丢弃。<b>改走 macOS 自己的 AirPlay 栈</b></li>
+          <li>待机状态下推流能唤醒它吗 → <b>不能</b>。IR 的 POWER 是硬断电不是待机，WiFi 一起掉，重新入网 28 秒，而且 macOS 的链路断了<b>不会自己回来</b></li>
+          <li>推流成功后源确实停在 WiFi 吗 → <b>是，而且是推流<i>把它拽过去</i>的</b>。这条让音乐链路自带修复能力</li>
+          <li>数一遍 SOURCE 循环 → <code>wifi → aux → bt → fm</code>，一圈 4 档<b>没有 DAB</b>，所以 <b>k = 3</b>。<b>手册写的顺序是错的</b></li>
+          <li>▲▼ 和 ◀▶ 在 FM 下分别是什么 → <b>两组都能调</b>，上/右 +0.05MHz，下/左 −0.05MHz</li>
+          <li>NEC 帧连发多久能触发长按 → <b>连发整帧永远触发不了</b>。要发 NEC <b>重复码</b>，而且整串必须在<b>一次</b> transmit 里发完（发射器 non_blocking，拆开发会把 108ms 节拍打散，而节拍正是设备用来数长按的东西）。阈值 18 帧</li>
+          <li>Tivoli 放着音乐时的唤醒率曲线 → <b>还没扫</b>，R2 仍然开着</li>
         </ul>
+        <p class="sec-note" style="margin-top:.9em">还测出一条计划外的：长按预设是 <b>toggle 不是覆盖</b> —— 位子空则存、位子满则删。所以「存到预设三」要按占用状态决定按一下还是两下，执行器为此维护一张落盘的 <code>preset_occupied</code> 表。</p>
       </div>
     </div>
 
@@ -774,12 +809,13 @@ footer {
       <div class="ms-body">
         <div class="ms-lanes"><span class="lane lane-ir">ir</span></div>
         <h3>Tivoli 执行器骨架 + 锚定原语</h3>
-        <p>服务端从「只有一个 <code>LightExecutor</code>」改成设备注册表，新增 <code>TivoliExecutor</code>。</p>
+        <p>服务端从「只有一个 <code>LightExecutor</code>」改成设备注册表，新增 <code>TivoliExecutor</code>。<b>锚定的实现换了，语义也降了一档</b>。</p>
         <ul>
-          <li><code>anchor()</code> —— 推静音、验成功、返回「已锚定到 WiFi」</li>
+          <li><code>anchor()</code> 现在判的是「TCP <code>:7000</code> 可达 <b>且</b> macOS 的 AirPlay 链路在」，<b>101ms</b>。不再是「推静音验回执」—— afplay 不管设备在不在都返回 0，那个回执拿不到了</li>
+          <li>链路断了会自动调 <code>tools/airplay_relink.sh</code> 点控制中心重挂。控制中心里设备名<b>没有暴露给辅助功能</b>，只能逐个点、点完回头问 <code>SwitchAudioSource</code> 变成了谁</li>
           <li>红外走 HA REST 打 <code>button.tivoli_ir_*</code>，复用现成的 <code>ha.py</code></li>
-          <li>影子状态：源、最后一次锚定时间、当前预设；每次锚定重新归零</li>
-          <li>NEC 长按连发（M6 测出的时长写进 <code>tivoli_ir.yaml</code> 的脚本）</li>
+          <li>音量走<b>网络绝对值</b>（593ms）而不是红外（1370ms）。而且 AirPlay 会把设备音量<b>同步回</b> macOS —— 这是整套系统里唯一能读回来的设备状态</li>
+          <li>实测「打开收音机」= 锚定 → SOURCE×3 → 精确落到 FM，2.9 秒</li>
         </ul>
       </div>
     </div>
@@ -788,13 +824,15 @@ footer {
       <div class="ms-id">M8<span class="ms-est">1–2 天</span></div>
       <div class="ms-body">
         <div class="ms-lanes"><span class="lane lane-net">net</span></div>
-        <h3>音乐链路：网易云 → RAOP</h3>
-        <p>本机跑 NeteaseCloudMusicApi（Node 已装，v23.9），你扫码登录一次，cookie 落在 gitignore 里。</p>
+        <h3>音乐链路：网易云 → macOS AirPlay</h3>
+        <p><b>没用 NeteaseCloudMusicApi</b> —— 那个 Node 项目已经从 npm 下架了。直接在 Python 里说 weapi（AES 两次 + 裸 RSA），加密层就三十行，少养一个会自己坏的依赖。</p>
         <ul>
-          <li>搜索 / 歌单 / 我喜欢的音乐 / 取播放直链</li>
+          <li><code>/weapi/cloudsearch</code> <b>已经废了</b>（一律回 <code>code:50000005</code>），老接口 <code>/weapi/search/get</code> 照常工作</li>
+          <li>搜索排名很差，<b>必须再拉一次 <code>song/detail</code> 拿热度来排</b> —— 搜「红豆」时它把一堆翻唱排在王菲前面</li>
+          <li>筛选<b>歌名先于歌手</b>。反过来的话「播放周杰伦的稻香」会放出《刀马旦》</li>
           <li>队列管理在我们这边 —— 直链有时效，必须在播之前才取</li>
-          <li>pyatv 推流 + 推元数据（标题/歌手会显示在 Tivoli 的屏上）</li>
-          <li>无版权 / VIP 曲目降级：换同名其他版本，还不行就说清楚为什么</li>
+          <li><b>拿不到元数据</b>：afplay 不送歌名，Tivoli 屏上显示不了</li>
+          <li>版权降级要说人话：<b>周杰伦的原唱压根不在网易云上</b>，所以匹配不上时回话必须讲明「网易云上没有周杰伦的《稻香》，给你放 XXX 的版本」</li>
         </ul>
       </div>
     </div>
@@ -833,12 +871,12 @@ footer {
       <div class="ms-id">M11<span class="ms-est">半天</span></div>
       <div class="ms-body">
         <div class="ms-lanes"><span class="lane lane-net">net</span></div>
-        <h3>回话有声：拿 Tivoli 当板子的喇叭</h3>
-        <p>板子没有喇叭，但屋里最好的喇叭就在眼前。Kokoro 合成的回话直接 RAOP 推给 Tivoli。</p>
+        <h3>回话有声：<b>板子自己的喇叭</b>，不是 Tivoli</h3>
+        <p>原计划是把回话推给 Tivoli。<b>方案变了</b>：J9 上接了一只喇叭，回话就从板子自己出来。这条比原方案好得多 —— 不依赖音响开着、不依赖 AirPlay 链路活着、延迟也低。</p>
         <ul>
-          <li>音乐播放中：记位置 → 播回话 → 续播</li>
-          <li>FM 模式下不能这么干（推流会把源抢走）—— 那时仍用 RGB 灯反馈</li>
-          <li>顺带把 <code>CONFIG_S31_HAS_SPEAKER</code> 那条分支的语义理清楚</li>
+          <li>分工：<b>日常语音回话 → S31 板载喇叭；放音乐 → Tivoli</b></li>
+          <li>固件那条路代码本来就写好了，只差 <code>CONFIG_S31_HAS_SPEAKER=y</code></li>
+          <li>输出音量原来在 <code>main.c</code> 里写死 70，实测偏小听不清，改成 <code>CONFIG_S31_SPEAKER_VOLUME</code>（85）—— 做成配置项是因为这值只能放出来听，推不出来</li>
         </ul>
       </div>
     </div>
@@ -859,8 +897,8 @@ footer {
       <div class="risk-id">R1</div>
       <div>
         <h3>Cast 打不通 <span class="lane lane-net">net</span></h3>
-        <p><code>:8009</code> 四个 TLS 版本全被 RST。最可能是待机导致接收端没起，但也可能是这块 Libre 模块的 Cast 实现根本不接受第三方 sender。</p>
-        <p><span class="mit">缓解</span>影响可控 —— AirPlay 今晚已经验活（<code>/info</code> 200），本方案<b>本来就把 AirPlay 当主路</b>，Cast 只是「如果能用就更省事」（设备自己去拉流，MBP 不用当中转）。M6 一测便知。</p>
+        <p><b>已定案：Cast 这条路不存在。</b>开机状态下复测，<code>:8009</code> 依然对所有 TLS 版本一律 RST —— 不是待机导致的，是这块 Libre 模块的 Cast 实现根本不接受第三方 sender。</p>
+        <p><span class="mit">结果</span>影响可控，因为本方案本来就把 AirPlay 当主路。但代价是<b>没有备胎了</b> —— AirPlay 这条链现在是音乐的唯一通路，而它比预想的脆（见 M7）。</p>
       </div>
     </div>
 
@@ -942,32 +980,32 @@ footer {
 
 <!-- ============ 7. 待你决定 ============ -->
 <section id="asks">
-  <h2>需要你拍板的</h2>
-  <p class="sec-note">前三个你已经选过了（网易云 API + 直链 · 本机 SenseVoice/Kokoro · Ollama + Qwen3-4B）。剩下这些不定我也能先写代码，但会先按括号里的默认值走。</p>
+  <h2>都已定了</h2>
+  <p class="sec-note">这一节原来是「需要你拍板的」。2026-09-11 实测那一轮之后，除一条外全部有了答案 —— 保留在这里是为了记住每条是怎么定的。</p>
 
   <div class="asks">
     <div class="ask">
-      <h3>M6 什么时候做？</h3>
-      <p>它必须让机器出声（开关机、切源、放音乐、对着板子说话），而且要在相对安静的环境（声学那条会被屋里人声污染，§5 记过一次教训）。这是唯一挡住后面全部工作的一步。</p>
+      <h3>M6 什么时候做</h3>
+      <p><b>2026-09-11 做完了。</b>结果推翻了本文档原来一半的假设 —— 锚定的实现、Cast 的去留、长按的波形和语义，全都不是原来设想的样子。把它设成闸门是对的。</p>
     </div>
     <div class="ask">
       <h3>网易云账号登录方式</h3>
-      <p>扫码还是手机号验证码？cookie 我会写进 <code>s31_voice/server/.env</code> 旁边并加进 gitignore，和 <code>MIIO_TOKEN</code> 一样的待遇。（默认：扫码）</p>
+      <p><b>扫码</b>，<code>tools/netease_login.py</code>，cookie 落在 <code>server/.netease_cookie</code>（600 权限，已 gitignore）。<span class="tag t-warn">还没扫</span> —— 搜索和放歌不登录也能用，只有「播放我的收藏」在等这一步。</p>
     </div>
     <div class="ask">
       <h3>常听哪几个 FM 台</h3>
-      <p>预设 1–6 起中文名之后，「放音乐之声」这类说法才成立，比「切到预设三」自然得多。你报台名，我来配。</p>
+      <p>机制做好了（<code>server/fm_presets.json</code>，台名 → 预设位，是配置不是代码），<b>表还空着</b>。你报台名就能用「放音乐之声」这种说法。在此之前只有「切到预设三」。</p>
     </div>
     <div class="ask">
       <h3>AirPlay 密码怎么处理</h3>
-      <p>见 R7。改一个专用的、清空、还是就这样。（默认：不动，我在代码里从配置读，不硬编码）</p>
+      <p>不动，从配置读。<b>而且它最后没派上用场</b> —— macOS 自己的 AirPlay 栈根本不要密码，那个密码只对 RTSP Digest 有效，而我们不再走那条路。R7 的暴露依然存在（同网段明文可见），只是不再影响本方案。</p>
     </div>
   </div>
 </section>
 
 <footer>
-  s31_voice · Tivoli Audio Model One Digital Gen 2 · 路线图 v1 · 2026-09-10<br>
-  事实核查一栏全部为当日实测；未实测的项已在表内标注「待测」。
+  s31_voice · Tivoli Audio Model One Digital Gen 2 · 路线图 v2 · 2026-09-12<br>
+  v1 是动手之前的设计；v2 按 2026-09-11 的出声实测改过，被推翻的地方保留了原文对照。
 </footer>
 
 </div>
