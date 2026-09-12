@@ -23,6 +23,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from typing import Sequence
 from typing import Callable, Literal
 
 Domain = Literal["light", "tivoli", "music", "aircon", "none"]
@@ -67,6 +68,20 @@ class Intent:
     raw: str = ""
     # 命中的规则名，方便排查
     rule: str = ""
+    # 有多大把握。**不是概率，是"这个结论是怎么得来的"的分档**：
+    #   1.0  句子里有明确的设备词（「打开台灯」）—— 没有可歧义的余地
+    #   0.9  泛化词，但候选里只有一台设备确实活着（在放歌时说「大一点」）
+    #   0.7  泛化词，靠"上一句聊的是它"定下来的 —— 话题是真信号，但比世界弱
+    #   0.4  泛化词，谁都没活着，纯靠兜底默认（开机就说「大一点」）
+    #   0.6  LLM 给的
+    # 存在的理由：低分要么触发反问、要么值得花 1.5 秒问一下 LLM，
+    # 而在此之前这三种情况在类型上完全平等，下游根本区分不了。
+    confidence: float = 1.0
+    # 泛化词是按哪个**候选域**选中的。注意它和 domain 可能不同：
+    # 「大一点」在 music 这一档下解出来的是 tivoli.volume_step
+    # （音量归音响那个物理旋钮管）。打分要看 via，不是 domain。
+    # 空字符串 = 这句话本来就不含糊。
+    via: str = ""
 
 
 # ---------------------------------------------------------------- FM 预设台名
@@ -469,6 +484,15 @@ _AMBIGUOUS: dict[str, dict[Domain, Intent]] = {
 }
 
 
+def ambiguous_domains(rule: str) -> list[Domain]:
+    """这条规则当初是在哪几个域之间做的选择。空 = 它本来就不含糊。
+
+    给对话管理器用：选完之后回头问一句"刚才真的分得清吗"，
+    分不清就该反问，而不是把 rank() 排第一的那个闷头做掉。
+    """
+    return list(_AMBIGUOUS.get(rule.removesuffix("-py"), {}).keys())
+
+
 def _to_pinyin(text: str) -> str:
     """转成无声调拼音，用来兜同音字。识别不出声调的差别正是我们要的模糊度。"""
     import pinyin_fix
@@ -524,8 +548,19 @@ _PINYIN_RULES: list[tuple[str, Domain, re.Pattern[str]]] = [
 ]
 
 
-def parse(text: str, last_domain: Domain | None = None) -> Intent:
-    """解析一句话。last_domain 是上一次成功操作的设备，用来给泛化词消歧。"""
+def parse(text: str, focus: "Domain | Sequence[Domain] | None" = None) -> Intent:
+    """解析一句话。
+
+    focus 是泛化词（「大一点」「关掉」）的消歧依据，可以是：
+      - 一个域名           —— 老用法，等价于只有一个候选
+      - 一串域名（有序）   —— 新用法，由 context.Context.rank() 按"此刻谁活着"排出来
+      - None               —— 没有任何依据，用 _AMBIGUOUS 表里的兜底
+
+    收一个**顺序**而不是一个答案，是这次改动的要点：
+    intent.py 必须保持同步、微秒级、无副作用（否则控灯那条 300ms 的快路径就没了），
+    所以它不该、也没法自己去问"音乐在放吗"。谁活着由 Context 算好了递进来，
+    这里只负责在候选表里按这个顺序取第一个取得到的。
+    """
     t = re.sub(r"[\s，。！？、,.!?]", "", text or "")
     if not t:
         return Intent("none", reply="我没听清", raw=text)
@@ -538,7 +573,8 @@ def parse(text: str, last_domain: Domain | None = None) -> Intent:
             return Intent("tivoli", "preset_recall", slots={"preset": n},
                           reply=f"切到{m.group(0)}", raw=text, rule="fm_station_name")
 
-    hit = _match(t, _RULES, text, last_domain)
+    order = _order(focus)
+    hit = _match(t, _RULES, text, order)
     if hit is not None:
         return hit
 
@@ -549,7 +585,7 @@ def parse(text: str, last_domain: Domain | None = None) -> Intent:
         if pat.search(py):
             return Intent("tivoli", "preset_recall", slots={"preset": n},
                           reply=f"切到{station_name(n)}", raw=text, rule="fm_station_name-py")
-    hit = _match(py, _PINYIN_RULES, text, last_domain, pinyin=True)
+    hit = _match(py, _PINYIN_RULES, text, order, pinyin=True)
     if hit is not None:
         return hit
 
@@ -558,7 +594,25 @@ def parse(text: str, last_domain: Domain | None = None) -> Intent:
     return Intent("none", reply="这个我还不会", raw=text)
 
 
-def _match(t: str, rules, raw: str, last_domain: Domain | None,
+def _order(focus) -> list[Domain]:
+    """把 focus 规整成一串候选顺序，末尾永远补上 "light"。
+
+    补 light 是为了**行为不退化**：这套系统一开始只有灯，很多泛化词
+    （「暗一点」）在只有灯的世界里从来不需要消歧。兜底留着它，
+    等于保证"世界状态什么都不知道"时，表现和改造前一模一样。
+    """
+    if focus is None:
+        order = []
+    elif isinstance(focus, str):
+        order = [focus]
+    else:
+        order = list(focus)
+    if "light" not in order:
+        order.append("light")
+    return order
+
+
+def _match(t: str, rules, raw: str, order: list[Domain],
            pinyin: bool = False) -> Intent | None:
     suffix = "-py" if pinyin else ""
     for name, _domain, pat in rules:
@@ -567,14 +621,19 @@ def _match(t: str, rules, raw: str, last_domain: Domain | None,
             continue
         if name in _AMBIGUOUS:
             table = _AMBIGUOUS[name]
-            choice = table.get(last_domain or "light") or table.get("light")
-            if choice is None:
+            # 按 Context 排好的顺序取第一个这条规则支持的域。
+            # 「大一点」在 _AMBIGUOUS 里有 tivoli/music/aircon/light 四个条目，
+            # 而 order 说的是此刻谁活着 —— 两边一交，就是该做的那件事。
+            picked = next((d for d in order if d in table), None)
+            if picked is None:
                 continue
+            choice = table[picked]
             return Intent(choice.domain, choice.action, slots=dict(choice.slots),
                           brightness_pct=choice.brightness_pct,
                           brightness_step_pct=choice.brightness_step_pct,
                           color_temp_kelvin=choice.color_temp_kelvin,
-                          reply=choice.reply, raw=raw, rule=name + suffix)
+                          reply=choice.reply, raw=raw, rule=name + suffix,
+                          via=picked)
         build = _BUILD.get(name)
         if build is None:
             continue
@@ -625,6 +684,10 @@ _MULTINET_COMMANDS: list[tuple[str, str | None]] = [
     ("冷光模式", None),      # leng …
     ("阅读模式", None),
     ("夜灯模式", None),
+    # --- 以下三条 2026-09-12 过了 tools/mn_regress.sh 才转正的，见下面 _MULTINET_CANDIDATES ---
+    ("打开收音机", None),   # 3/4，prob 0.14~0.26
+    ("关掉收音机", None),   # prob 0.45，全表最稳
+    ("暂停播放", None),     # prob 0.16
 ]
 # 没有单独的"最暗"命令：能表达它的说法（最暗/亮度最小/微光模式）在板上一条都不触发，
 # 而「夜灯模式」本来就是 5% + 2700K，实际需求已经被它覆盖，「暗一点」还能连着说。
@@ -644,21 +707,35 @@ _MULTINET_COMMANDS: list[tuple[str, str | None]] = [
 #   - 「换一个台 / 上一个台」差两个音节（huan/shang + yi ge tai），勉强够开；
 #     真验不过就砍掉「上一个台」，往回退的需求本来就低频。
 _MULTINET_CANDIDATES: list[tuple[str, str | None]] = [
-    ("打开收音机", None),
-    ("关掉收音机", None),
-    ("换一个台", None),
-    ("上一个台", None),
-    ("播放我的收藏", None),
-    ("下一首歌", None),
-    ("暂停播放", None),
-    ("继续播放", None),
-    ("声音大一点", None),
-    ("声音小一点", None),
-    ("打开空调", None),
-    ("关掉空调", None),
-    ("温度高一点", None),
-    ("温度低一点", None),
+    # 只留四条。**不是因为别的词不好，是因为词表有容量上限** ——
+    # 2026-09-12 实测对照：
+    #     9 条词表   通过 4/5，置信度 0.25~0.47
+    #     23 条词表  通过 2/7，置信度 0.15~0.16
+    # 所有词一起变差，不是个别词失效。候选越多，每个词越难把自己
+    # 和其他候选拉开声学距离 —— 和 §4.1.3 里两音节词失效是同一个机制。
+    # 所以往板上加词是**零和的**：加一条就让其余每条都难一点。
+    # 空的。上一批候选 2026-09-12 验完了：
+    # 「打开收音机」「关掉收音机」「暂停播放」已转正，挪进 _MULTINET_COMMANDS；
+    # 「下一首歌」「换一首歌」实测不过，原因见下。
+    # 下次要加词就往这里放，跑 MULTINET_INCLUDE_CANDIDATES=1 + tools/mn_regress.sh，
+    # 过了再转正 —— 别直接往正式表里塞。
 ]
+# 被实测挡在门外的（留着记录，别再无脑加回去）：
+#   换一个台 / 上一个台 / 播放我的收藏 / 继续播放 /
+#   声音大一点 / 声音小一点 / 打开空调 / 关掉空调 / 温度高一点 / 温度低一点
+# 它们本身不一定差 —— 是 23 条一起上的时候全都被稀释了。
+# 要加的话得**替换**而不是追加，并且每次都重跑 tools/mn_regress.sh。
+#
+# 「下一首」单独说一下，因为它是音乐里最高频的命令，值得记清楚为什么没进来：
+#   「下一首歌」 0/3 静默失效（注册成功、日志正常、永不触发，§4.1.3 那一类）
+#   「换一首歌」 0/2 同样静默失效 —— 同一轮基线「打开收音机」✓ prob=0.16、
+#                唤醒 3/3，所以不是测试台的问题。
+# 换词的时候犯了个方法上的错：这两条共享「一首歌」三个音，五个音节里同了三个，
+# 根本不是两次独立试验，等于把同一个音串试了两遍。真要再试得换成音串不重叠的，
+# 比如「播放下一首」或「切换歌曲」。
+# 不过没进板上词表 ≠ 不能用：板上词表只是**唤醒后的离线快路**，
+# 匹配不上会照常把音频送到服务端走 SenseVoice，意图层认得「下一首」。
+# 只是慢一秒左右。而且词表容量是零和的，空出这一格让剩下四条都好过一点。
 
 
 def _auto_phonemes(text: str) -> str:

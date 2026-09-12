@@ -343,27 +343,41 @@ async def tts_endpoint(request: Request):
     return Response(content=_pcm_to_wav(pcm, CONFIG.board_sample_rate), media_type="audio/wav")
 
 
+# 追问窗口开多久。平时 0 = 用板子自己的默认（3.5s，够说一句「下一首」）。
+# 但**我们主动问了问题**的时候要长得多：用户得先听完三个选项、再想一下。
+# 3.5 秒实测就是"还没张嘴窗口就关了"。
+_ASK_WINDOW_MS = 7000
+
+
+def _followup_fields(parsed, ok: bool) -> dict:
+    """追问相关的三个字段，两个 endpoint 共用（板子两条路径后面是同一段代码）。"""
+    asking = _router.asking
+    followup = asking or _router.wants_followup(parsed, ok)
+    if followup:
+        # 追问窗口期间继续压着 —— 上一轮的压制马上就要到期了
+        asyncio.create_task(_air.duck(_DUCK_LEVEL, _DUCK_SECONDS))
+    return {"followup": followup, "asking": asking,
+            "followup_ms": _ASK_WINDOW_MS if asking else 0}
+
+
 @app.post("/command")
 async def command_endpoint(request: Request):
     t = _Timer()
     payload = await request.json()
     text = payload.get("text", "")
-    parsed = intent_mod.parse(text, _router.last_domain)
+    parsed = intent_mod.parse(text, _router.ctx.rank(_router._DOMAINS))
     deferred = await _maybe_defer(parsed)
     if deferred is not None:
         ok, reply = deferred
     else:
         parsed, ok, reply = await _router.parse_and_execute(text)
     t.mark("exec")
-    followup = _router.wants_followup(parsed, ok)
-    if followup:
-        # 追问窗口期间继续压着 —— 上一轮的压制马上就要到期了
-        asyncio.create_task(_air.duck(_DUCK_LEVEL, _DUCK_SECONDS))
+    fu = _followup_fields(parsed, ok)
     _LOG.info("命令词 %r 意图=%s.%s(%s) 执行=%s 追问=%s  [%s]", text, parsed.domain,
-              parsed.action, parsed.rule, ok, followup, _fmt_ms(t.marks))
+              parsed.action, parsed.rule, ok, fu["followup"], _fmt_ms(t.marks))
     return JSONResponse({"text": text, "domain": parsed.domain, "action": parsed.action,
-                         "rule": parsed.rule, "slots": parsed.slots, "followup": followup,
-                         "ok": ok, "reply": reply, "ms": t.done()})
+                         "rule": parsed.rule, "slots": parsed.slots,
+                         "ok": ok, "reply": reply, "ms": t.done(), **fu})
 
 
 @app.post("/utterance")
@@ -395,24 +409,22 @@ async def utterance_endpoint(request: Request):
         _LOG.info("原始音频存到 %s", path)
     text = await asyncio.to_thread(STT.transcribe_array, audio, rate)
     t.mark("stt")
-    parsed = intent_mod.parse(text, _router.last_domain)
+    parsed = intent_mod.parse(text, _router.ctx.rank(_router._DOMAINS))
     deferred = await _maybe_defer(parsed)
     if deferred is not None:
         ok, reply = deferred
     else:
         parsed, ok, reply = await _router.parse_and_execute(text)
     t.mark("exec")
-    followup = _router.wants_followup(parsed, ok)
-    if followup:
-        asyncio.create_task(_air.duck(_DUCK_LEVEL, _DUCK_SECONDS))
+    fu = _followup_fields(parsed, ok)
     # 顺带记一个"识别快过实时多少倍"：STT 慢是慢在模型还是慢在这句话太长，
     # 只看绝对毫秒数分不出来。
     _LOG.info("兜底 %.2fs 音频 -> %r 意图=%s.%s(%s) 执行=%s  [%s, %.1fx 实时]", secs, text,
               parsed.domain, parsed.action, parsed.rule, ok, _fmt_ms(t.marks),
               secs * 1000 / max(t.marks["stt"], 1))
     return JSONResponse({"text": text, "domain": parsed.domain, "action": parsed.action,
-                         "rule": parsed.rule, "slots": parsed.slots, "followup": followup,
-                         "ok": ok, "reply": reply, "ms": t.done()})
+                         "rule": parsed.rule, "slots": parsed.slots,
+                         "ok": ok, "reply": reply, "ms": t.done(), **fu})
 
 
 @app.websocket("/voice")

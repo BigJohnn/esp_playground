@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 
 from config import CONFIG
 from ha import HomeAssistant
 import intent as intent_mod
+from context import Context, Question
 from intent import Intent
 
 _LOG = logging.getLogger("exec")
@@ -151,6 +154,19 @@ class LightExecutor:
 
 # 说完这些之后，自然没有下文 —— 开追问窗口是白开，只是平白多几秒麦克风暴露。
 # 判据很朴素：这句话本身就是一个终点（关掉、停止），而不是一个中间步骤。
+# 反问出去的问题能等多久。和选歌那边是同一个道理：一个悬着的问题会改写
+# 后面每一句话的含义，所以必须会过期。
+_QUESTION_TTL = 45.0
+
+# 置信度低于这个值就值得花 1.5 秒问一下模型。
+# 0.6 这个位置是照着 context.confidence_for 的分档挑的：
+#   0.9 它确实活着            -> 不问，规则就是对的
+#   0.7 不知道，但刚聊过它     -> 不问，话题是真信号
+#   0.5 不知道，也没聊过       -> 问
+#   0.4 确定关着，纯属兜底     -> 问
+# 也就是"只在完全没有现场证据支撑时才问"，而不是"不确定就问"。
+_ASK_LLM_BELOW = 0.6
+
 _TERMINAL = {
     ("light", "off"),
     ("tivoli", "power_off"),
@@ -167,29 +183,185 @@ class Router:
         self.music = music
         self.aircon = aircon
         self.llm = llm
-        # 上一次**成功**操作的设备。失败的不算 —— 一条没执行成的命令不该改变
-        # 后面那句"关掉"的含义。
-        self.last_domain: str | None = None
+        # 对话状态。替掉了原来的 last_domain —— 它记的是"我们说过什么"，
+        # 而省略主语的话要靠"现在正在发生什么"补全。见 context.py 开头那段。
+        self.ctx = Context()
+
+    @property
+    def last_domain(self) -> str | None:
+        """老名字，留给 app.py / 日志 / 测试。现在只是 ctx.focus 的别名。"""
+        return self.ctx.focus
+
+    # 所有可能被泛化词命中的域。顺序无所谓 —— rank() 会重排。
+    _DOMAINS = ("light", "music", "tivoli", "aircon")
+
+    def _refresh_world(self) -> None:
+        """把各执行器**进程内**已经知道的状态收进 Context。
+
+        刻意只读进程内的东西，一次网络都不发：这个函数在每条命令的关键路径上，
+        而控灯的预算总共才 300ms。读得到的就读（音乐队列在我们自己手里，
+        Tivoli 有影子状态），读不到的留 None —— None 是"不知道"，
+        rank() 会把它排在"确定关着"前面而不是后面。
+        """
+        w = self.ctx.world
+        if self.music is not None:
+            st = self.music.status()
+            w.music_playing = bool(st.get("playing"))
+            w.music_paused = bool(st.get("paused"))
+            if w.music_playing or w.music_paused:
+                w.touch("music")
+        if self.tivoli is not None:
+            sh = self.tivoli.shadow
+            w.tivoli_powered = sh.powered
+            w.tivoli_source = sh.source
+        if self.aircon is not None:
+            w.aircon_on = getattr(self.aircon, "believed_on", None)
+
+    def _note_effect(self, intent: Intent) -> None:
+        """一条命令做成之后，它自己就是关于世界的最新消息。
+
+        比任何回读都可靠也便宜：我们刚把灯关了，就不必再去问灯亮不亮。
+        （前提是执行器报告成功 —— 而 README §4.1.17 讲的正是"成功"不总是可信。
+        所以这里只记那些**本地可验证**的动作，红外那种没有回执的不记。）
+        """
+        w, d, a = self.ctx.world, intent.domain, intent.action
+        if d == "light":
+            if a == "off":
+                w.light_on = False
+            elif a in ("on", "brightness", "brightness_step", "color_temp"):
+                w.light_on = True
+        elif d == "aircon" and a in ("on", "off"):
+            w.aircon_on = (a == "on")
 
     def _for(self, domain: str):
         return {"light": self.light, "tivoli": self.tivoli,
                 "music": self.music, "aircon": self.aircon}.get(domain)
 
+    @property
+    def asking(self) -> bool:
+        """我们这一轮是不是**真的问了用户一个问题**，正等着回答。
+
+        板子要靠它决定"追问窗口里没听懂"该不该出声：平时该闭嘴（窗口是我们
+        自己开的，屋里一点动静就会走到那儿），但问了问题之后闭嘴是错的 ——
+        用户答了一句，系统一声不吭，他不知道是没听见还是答错了。
+        """
+        if self.ctx.question is not None and not self.ctx.question.expired:
+            return True
+        return bool(self.music is not None and self.music.pending is not None
+                    and not self.music.pending.expired)
+
     async def parse_and_execute(self, text: str) -> tuple[Intent, bool, str]:
         """一句话进来，走完三层意图 + 执行。返回 (最终意图, 是否执行了, 回话)。"""
-        parsed = intent_mod.parse(text, self.last_domain)
+        # 有问题悬着的话，先按"这是在回答"试一次。**必须在意图解析之前** ——
+        # 「第二个」在普通意图里什么都不是，走到 LLM 那层还可能被瞎猜成别的。
+        # answer() 认不出来会还回 None，那时候再原样往下走，一个字都不会被吞掉。
+        answered = await self._answer_domain(text)
+        if answered is not None:
+            return answered
 
-        if parsed.domain == "none" and self.llm is not None:
-            # 规则层和拼音层都放弃了，才轮到模型。硬超时在 llm.py 里，
-            # 超时就当没有这一层 —— 回"这个我还不会"，跟以前一样。
-            guess = await self.llm.classify(text)
-            if guess:
+        if self.music is not None and self.music.pending is not None:
+            answered = await self.music.answer(text)
+            if answered is not None:
+                ok, reply = answered
+                self.ctx.record(text, "music", "choose", ok, reply)
+                return (Intent(domain="music", action="choose", slots={},
+                               reply=reply, raw=text, rule="choice"), ok, reply)
+
+        self._refresh_world()
+        # 候选顺序按"此刻谁活着"排，而不是按"上次说的是谁"。
+        order = self.ctx.rank(self._DOMAINS)
+        parsed = intent_mod.parse(text, order)
+
+        # 选完之后回头看一眼：刚才真的分得清吗？
+        # 灯开着、音乐也放着、话题又帮不上忙的时候说「关掉」，
+        # rank() 还是会排出一个第一名，但那只是排序，不是把握。
+        if parsed.via:
+            parsed.confidence = self.ctx.confidence_for(parsed.via)
+        amb = self.ctx.ambiguous(intent_mod.ambiguous_domains(parsed.rule))
+        if amb:
+            return self._ask_domain(text, parsed, amb)
+
+        # 什么时候问模型：从"完全没命中"放宽到"**没把握**"。
+        #
+        # 原来的条件是 domain=="none"。但规则层还有一种更坏的失败：命中了，
+        # 而且是错的 —— 开机就说「大一点」会稳稳地落到灯上（conf=0.5），
+        # 屋里可能根本没开灯。这种"自信的错"用户看到的是设备乱动，
+        # 比"这个我还不会"难受得多，却从来没机会走到模型那一层。
+        #
+        # 顺带纠正设计时的一个想当然：本来打算让规则和模型**并行**发车，
+        # 省掉串行的等待。实现时才发现没有可并行的东西 —— 规则层是微秒级的，
+        # 命中与否瞬间就知道，根本不存在"等规则的同时先让模型跑起来"这个窗口。
+        # 真正省时间的是不问（高置信直接执行），而不是早问。
+        if self.llm is not None and (parsed.domain == "none"
+                                     or parsed.confidence < _ASK_LLM_BELOW):
+            # 硬超时在 llm.py 里，超时就当没有这一层 —— 规则给的那个照常用。
+            guess = await self.llm.classify(text, self.ctx)
+            if guess and guess["domain"] != "none":
+                _LOG.info("规则%s（%s conf=%.1f），LLM 判成 %s.%s",
+                          "没中" if parsed.domain == "none" else "没把握",
+                          parsed.rule or "-", parsed.confidence,
+                          guess["domain"], guess["action"])
                 parsed = Intent(domain=guess["domain"], action=guess["action"],
                                 slots=guess.get("slots") or {},
-                                reply=guess.get("reply", ""), raw=text, rule="llm")
-                _LOG.info("规则没中，LLM 判成 %s.%s", parsed.domain, parsed.action)
+                                reply=guess.get("reply", ""), raw=text, rule="llm",
+                                confidence=0.6)
 
         ok, reply = await self.execute(parsed)
+        self.ctx.record(text, parsed.domain, parsed.action, ok, reply)
+        if ok:
+            self._note_effect(parsed)
+        return parsed, ok, reply
+
+    # ------------------------------------------------------------ 反问
+
+    # 反问时怎么称呼每个域。用用户会说的词，不是内部域名。
+    _CALL = {"light": "灯", "music": "音乐", "tivoli": "音响", "aircon": "空调"}
+
+    def _ask_domain(self, text: str, parsed: Intent, amb: list[str]) -> tuple[Intent, bool, str]:
+        """真分不清是哪台设备，就问一句。
+
+        只在**两台以上确定活着**时才走到这儿（见 Context.ambiguous），
+        所以这不是"没把握就问" —— 那样会烦死人。这是"猜错的代价高于问一句"：
+        灯和音乐都开着时把「关掉」猜错，用户得再说一次，还得先反应过来发生了什么。
+        """
+        names = [self._CALL.get(d, d) for d in amb[:3]]
+        q = Question(kind="domain",
+                     options=[{"domain": d, "name": n} for d, n in zip(amb, names)],
+                     text=f"{'还是'.join(names)}？",
+                     deadline=time.time() + _QUESTION_TTL)
+        self.ctx.question = q
+        # 原话留着：用户答「音乐」之后，要拿它重解一遍，而不是让用户重说一整句。
+        q.options.append({"pending_text": text})
+        self.ctx.record(text, parsed.domain, parsed.action, False, q.text)
+        _LOG.info("「%s」在 %s 之间分不清，反问", text, "/".join(names))
+        return Intent(domain="none", action="ask", slots={}, reply=q.text,
+                      raw=text, rule="ask_domain"), True, q.text
+
+    async def _answer_domain(self, text: str) -> tuple[Intent, bool, str] | None:
+        """把一句话当成对"哪台设备"的回答。不是就还回 None。"""
+        q = self.ctx.question
+        if q is None or q.kind != "domain" or q.expired:
+            return None
+        t = text.strip()
+        picked = None
+        for opt in q.options:
+            name, dom = opt.get("name"), opt.get("domain")
+            if name and dom and name in t:
+                picked = dom
+                break
+        if picked is None:
+            return None
+        original = next((o["pending_text"] for o in q.options if "pending_text" in o), "")
+        self.ctx.question = None
+        # 拿**原话**重解一遍，只是这次把答案顶到候选顺序最前面。
+        # 不是直接执行"那个域的默认动作"—— 原话里可能还带着别的信息
+        # （「小一点」的幅度、「下一个」的方向），重解一次比自己拼一个意图可靠。
+        order = [picked] + [d for d in self.ctx.rank(self._DOMAINS) if d != picked]
+        parsed = intent_mod.parse(original or text, order)
+        ok, reply = await self.execute(parsed)
+        self.ctx.record(text, parsed.domain, parsed.action, ok, reply)
+        if ok:
+            self._note_effect(parsed)
         return parsed, ok, reply
 
     def wants_followup(self, intent: Intent, ok: bool) -> bool:
@@ -207,17 +379,28 @@ class Router:
         if intent.domain == "none" or intent.action == "none":
             return False, intent.reply or "这个我还不会"
 
+        # 只识别、不执行。声学回归要用：那个测试量的是"板子听没听对"，
+        # 而真去执行会把一堆副作用混进来 —— 实测踩过一次：词表里有
+        # 「播放我的收藏」，它执行时发现 AirPlay 链路断了就去重挂，
+        # 把系统音频输出从内置喇叭切到了 Tivoli，于是后面每一条测试词
+        # 都在往一个没人听的地方放，整轮唤醒 1/7，看起来像是板子坏了。
+        if os.environ.get("DRY_RUN", "").strip() in ("1", "true", "yes"):
+            _LOG.info("[DRY_RUN] 只解析不执行：%s.%s %s",
+                      intent.domain, intent.action, intent.slots or "")
+            self.ctx.world.touch(intent.domain)
+            return True, intent.reply or f"[{intent.domain}.{intent.action}]"
+
         target = self._for(intent.domain)
         if target is None:
             return False, "这台设备还没接上"
 
-        ok, reply = await target.execute(intent)
-        if ok:
-            self.last_domain = intent.domain
-        return ok, reply
+        # 注意这里**不**更新 focus。记账统一在 parse_and_execute 的 ctx.record()
+        # 里做 —— execute() 还有别的调用方（消歧答完之后的重解），
+        # 两处都记就会把同一轮对话记两遍。
+        return await target.execute(intent)
 
     def status(self) -> dict:
-        out: dict = {"last_domain": self.last_domain}
+        out: dict = {"last_domain": self.last_domain, "context": self.ctx.as_dict()}
         if self.tivoli is not None:
             out["tivoli"] = self.tivoli.shadow.as_dict()
             out["tivoli"]["measured"] = bool(self.tivoli.conf.get("measured"))

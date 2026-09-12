@@ -43,6 +43,10 @@ class AirconExecutor:
         # 这不是 Tivoli 那种"影子状态可能骗人"：Coolix 是绝对状态帧，
         # 我们下发什么它就是什么，所以这个值在短时间内比 HA 更可信。
         self._last_set: tuple[int, float] | None = None
+        # 我们以为它开着没有。给对话层的消歧用（「大一点」是温度还是音量），
+        # 不是给控制用 —— 控制走的是绝对状态帧，从来不需要知道当前状态。
+        # None = 不知道（刚启动、或只被实体遥控器动过）。
+        self.believed_on: bool | None = None
 
     async def _state(self) -> dict:
         """读回当前状态。**这一步在 Tivoli 上是做不到的**，在这儿可以。"""
@@ -83,12 +87,14 @@ class AirconExecutor:
             if not await self._call("set_hvac_mode", hvac_mode="off"):
                 return False, "空调没反应，检查一下红外板"
             self._last_set = None      # 关机之后温度记账作废
+            self.believed_on = False
             return True, "空调关了"
 
         if a == "on":
             mode = slots.get("mode") or "cool"
             if not await self._call("set_hvac_mode", hvac_mode=mode):
                 return False, "空调没反应，检查一下红外板"
+            self.believed_on = True
             temp = slots.get("temp")
             if temp is not None:
                 await self._call("set_temperature", temperature=int(temp))

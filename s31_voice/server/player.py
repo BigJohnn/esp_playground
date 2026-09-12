@@ -43,6 +43,105 @@ _MODE_CN = {SEQUENTIAL: "顺序播放", REPEAT_ALL: "列表循环",
             SHUFFLE: "随机播放", REPEAT_ONE: "单曲循环"}
 
 
+# 选歌消歧。挑不准的时候不硬挑，把前三个念出来问一句。
+#
+# 门槛定在哪，是这件事唯一真正的设计决策。问多了比不问还烦 ——
+# 「播放红豆」每次都要答一遍"第几个"，用户会直接不用它。所以默认必须是**直接放**，
+# 只有下面这三种"我确实不知道"才开口问。判据全是搜索结果里读得到的东西，不猜：
+#
+#   1. 指了歌手，但搜到的都不是他唱的     -> 问
+#      （以前的做法是放个翻唱再说一句"网易云上没有周杰伦的…"。
+#        但"放错了还告诉你"和"问一句再放对"之间，显然是后者。）
+#   2. 同名的有好几首，而热度分不开        -> 问
+#   3. 压根没有完全同名的，只有名字里带    -> 问
+#
+# 本来还有第四条"热度拉得开就直接放"，实测基本用不上，但留着：
+#
+#   **网易云的 pop 会饱和在 100**。搜「红豆」回来王菲、方大同、
+#   徐泽（要不要买菜）三个版本全是 pop=100；搜「稻香」前六名全是翻唱，
+#   100/95/95/95…（周杰伦的原版根本不在结果里，版权下架了）。
+#   所以 pop 只能当**平手时的决胜局**，当不了主排序。
+#   README §4.1.14 里"按 pop 排立刻就对了"那句是在更窄的样本上得出的，
+#   放宽之后不成立 —— 已在那节补了更正。
+#
+# 结果就是：同名的有好几首时基本都会问。这正好是用户要的行为
+#（"有就直接播，没有就把前三个问我"），所以不去为它硬造一个排序信号。
+_POP_GAP = 12.0
+_OFFER_N = 3
+# 问题的有效期。过期不是因为技术上做不到更久，是因为一个悬着的问题会**改写后面
+# 每一句话的含义** —— 用户半分钟后随口说的「第二个」不该被当成对它的回答。
+_PENDING_TTL = 45.0
+
+
+@dataclass
+class Pending:
+    """系统问了一个问题，正等着回答。"""
+    songs: list[Song]
+    deadline: float
+
+    @property
+    def expired(self) -> bool:
+        return time.time() > self.deadline
+
+
+def _short_artist(s: Song) -> str:
+    """念得出来的歌手名。
+
+    必须截断：搜「花儿与少年」回来的全是综艺主题曲，一首歌挂着七到九个演员
+    （"华晨宇、刘涛、张翰、郑佩佩、张凯丽、许晴、李菲儿"）。三个选项这么念
+    要二十多秒，用户早就忘了第一个是什么。选项念不完的问题 = 没问。
+    """
+    if not s.artists:
+        return "未知歌手"
+    first = s.artists[0]
+    return f"{first}等{len(s.artists)}人" if len(s.artists) > 2 else "、".join(s.artists)
+
+
+def _offer_labels(songs: list[Song]) -> list[str]:
+    """念给用户听的候选标签。只说**能把它们区分开**的那部分。
+
+    歌名都一样（本来就是因为同名才要问），所以主键是歌手；
+    万一歌手也一样（同一个人的不同版本/合辑），再补专辑名。
+    全都一样就只能报序号了 —— 那种情况问了也白问，_ask 那边会直接放第一个。
+    """
+    names = [_short_artist(s) for s in songs]
+    dup = {a for a in names if names.count(a) > 1}
+    return [f"{n}的{s.album[:12]}" if n in dup and s.album else n
+            for n, s in zip(names, songs)]
+
+
+_ORDINALS = [
+    ("1", ("第一个", "第一首", "第一条", "第一", "头一个", "一个", "一号", "1")),
+    ("2", ("第二个", "第二首", "第二条", "第二", "二号", "两个", "2")),
+    ("3", ("第三个", "第三首", "第三条", "第三", "三号", "3")),
+]
+# 「都不要」这类。注意「不要」不能单独算 —— 「不要第一个」是在选，不是在取消。
+_CANCEL = ("都不要", "都不是", "都不对", "算了", "不用了", "取消", "没有想要的", "不听了")
+
+
+def _parse_choice(text: str, songs: list[Song]) -> int | None | str:
+    """把一句回答变成：选了第几个（int）/ 取消（"cancel"）/ 这根本不是在回答（None）。
+
+    第三种情况最重要。用户完全可能在问题悬着的时候直接说「打开台灯」——
+    那句话必须原样走正常流程，**不能被这个问题吞掉**。所以认不出来就还回 None，
+    让调用方继续往下走，而不是在这儿报一句"没听清"。
+    """
+    t = text.strip().replace(" ", "")
+    if not t:
+        return None
+    if any(w in t for w in _CANCEL):
+        return "cancel"
+    for i, (_, words) in enumerate(_ORDINALS[:len(songs)]):
+        if any(w in t for w in words):
+            return i
+    # 按歌手名答的："要黑鸭子的"。比序号自然，而且用户往往记得住名字记不住序号。
+    for i, s in enumerate(songs):
+        for a in s.artists:
+            if a and (a in t or (len(a) > 1 and a[:2] in t)):
+                return i
+    return None
+
+
 @dataclass
 class NowPlaying:
     song: Song
@@ -81,6 +180,8 @@ class MusicExecutor:
         # 上一次"什么都没放成"的原因。单曲请求时要拿它当回话 ——
         # 用户说了一首具体的歌，结果没放，必须告诉他为什么。
         self.last_skip_reason = ""
+        # 悬着的问题。见 Pending / _parse_choice。
+        self.pending: Pending | None = None
         self._lock = asyncio.Lock()
         os.makedirs(_CACHE_DIR, exist_ok=True)
 
@@ -348,6 +449,104 @@ class MusicExecutor:
 
     # ---------------------------------------------------------- 选歌
 
+    def _pick_or_ask(self, songs: list[Song], artist: str | None,
+                     title: str) -> tuple[list[Song], str]:
+        """挑得准就挑，挑不准就把前三个记下来准备问。
+
+        返回值沿用 `(队列, 回话)`：要问的时候队列是空的、回话是问题本身，
+        同时 self.pending 被置上。调用方靠 pending 区分"没找到"和"要问你"。
+        """
+        self.pending = None
+        if not songs:
+            return [], f"没找到《{title}》"
+
+        exact = [x for x in songs if x.name == title]
+        loose = [x for x in songs if title in x.name and x not in exact]
+        # 同热度选长的（短的通常是片段/伴奏/彩铃）。注意 pop 只能当**平手时的
+        # 决胜局**，不能当主排序 —— 见 _POP_GAP 那段实测。
+        rank = lambda xs: sorted(xs, key=lambda x: (x.pop, x.duration_ms), reverse=True)
+
+        if artist:
+            # 歌名完全相同的那批**先来**，名字里带的那批只在前者为空时才考虑。
+            # 顺序反过来会出这种事：搜「周杰伦 稻香」时，一个上传者昵称叫
+            # "周杰伦."（带个点）的《稻香(治愈版)》因为热度高，
+            # 盖过了所有歌名正好是「稻香」的结果 —— 然后系统说"播放周杰伦的《稻香》"。
+            for pool in (exact, loose):
+                # 主唱名字**完全相等**才算直接命中。只是包含（"周杰伦." 含 "周杰伦"）
+                # 不算 —— 网易云上冒用原唱名字的上传者非常多，
+                # 而这一步的后果是"不问就放"，门槛必须比展示用的 _is_artist 高。
+                mine = rank([x for x in pool if any(a == artist for a in x.artists)])
+                if mine:
+                    return [mine[0]], f"播放{self._say(mine[0])}"
+            # 指名道姓要某个歌手，搜出来一个都不是他。这是最该问的情况：
+            # 网易云上有大量翻唱，而某些歌手的整个曲库压根不在这个平台
+            # （实测「周杰伦 稻香」的 30 条结果里，没有一条的歌手是周杰伦）。
+            cands = rank(exact) or rank(loose)
+            if not cands:
+                return [], f"没找到《{title}》"
+            return self._ask(cands, f"网易云上没有{artist}的《{title}》")
+
+        if not exact:
+            if not loose:
+                return [], f"没找到《{title}》"
+            # 只有"名字里带"，没有完全同名。「红豆」和「红豆生南国」是两首歌，
+            # 这时候替用户做主风险太大。
+            return self._ask(rank(loose), f"没有完全叫《{title}》的")
+
+        best = rank(exact)
+        if len(best) == 1:
+            return [best[0]], f"播放{self._say(best[0])}"
+        if best[0].pop - best[1].pop >= _POP_GAP:
+            return [best[0]], f"播放{self._say(best[0])}"
+        return self._ask(best, f"《{title}》有几个版本")
+
+    @staticmethod
+    def _say(song: Song) -> str:
+        """回话里怎么称呼一首歌。和选项标签用同一套截断规则 ——
+        不然"播放华晨宇、刘涛、张翰、郑佩佩、张凯丽、许晴、李菲儿的《花儿与少年》"
+        这句话本身就要念十几秒。"""
+        return f"{_short_artist(song)}的《{song.name}》"
+
+    def _ask(self, cands: list[Song], lead: str) -> tuple[list[Song], str]:
+        cands = cands[:_OFFER_N]
+        labels = _offer_labels(cands)
+        if len(set(labels)) < len(labels):
+            # 念出来分不开的选项，问了也没法答。与其让用户在三个一模一样的
+            # 描述里选，不如直接放热度最高的那个。
+            return [cands[0]], f"播放{self._say(cands[0])}"
+        self.pending = Pending(songs=cands, deadline=time.time() + _PENDING_TTL)
+        opts = "，".join(f"{n}，{lab}" for n, lab in zip("一二三", labels))
+        return [], f"{lead}。{opts}。要哪个？"
+
+    async def answer(self, text: str) -> tuple[bool, str] | None:
+        """把一句话当成对上一个问题的回答来解。
+
+        不是回答就还回 None —— 调用方必须继续走正常的意图解析。
+        这是整个交互里最容易做错的一步：一个悬着的问题如果会**吞掉**
+        下一句话，那用户在问题之后说「打开台灯」就会石沉大海，
+        而他根本不知道系统还在等一个答案。
+        """
+        p = self.pending
+        if p is None:
+            return None
+        if p.expired:
+            self.pending = None
+            return None
+        choice = _parse_choice(text, p.songs)
+        if choice is None:
+            # 不是在回答。**把问题撤掉**再放行：用户已经用行动表示他不打算答了，
+            # 留着它只会让再下一句「第二个」错误地命中一个早就过时的问题。
+            self.pending = None
+            _LOG.info("「%s」不像是在回答选歌，问题作废，按普通命令走", text)
+            return None
+        self.pending = None
+        if choice == "cancel":
+            return True, "好的"
+        song = p.songs[int(choice)]
+        return await self.execute(Intent(domain="music", action="play_song",
+                                         slots={"song_id": song.id},
+                                         reply="", raw=text, rule="choice"))
+
     async def _resolve(self, intent: Intent) -> tuple[list[Song], str]:
         """把意图变成一条队列。返回 (队列, 回话)。"""
         slots = intent.slots
@@ -373,6 +572,22 @@ class MusicExecutor:
             return [], f"没找到跟「{kw}」有关的歌"
 
         if slots.get("title"):
+            # 「某某的某某」这条规则会把"的"当成歌手和歌名的分界，而"的"经常
+            # 就是歌名自己的一部分：「月亮代表我的心」被劈成 歌手=月亮代表我 /
+            # 歌名=心，然后系统一本正经地说"网易云上没有月亮代表我的《心》"。
+            #
+            # 不去给正则打补丁（"的"前面几个字算歌手，这种规则永远有反例）,
+            # 而是**让曲库来裁决**：整句话如果本身就是一首歌的名字，
+            # 那这个"的"就不是分界符。索引比正则更懂什么是歌名。
+            # 代价是多一次搜索，且只在规则真的劈过的时候才花。
+            if slots.get("artist") and query:
+                whole = await self.ne.search(query, limit=30)
+                if any(x.name == query for x in whole):
+                    whole = await self.ne.songs([x.id for x in whole]) or whole
+                    _LOG.info("「%s」整句就是歌名，不按「的」拆成 %s / %s",
+                              query, slots.get("artist"), slots.get("title"))
+                    return self._pick_or_ask(whole, None, query)
+
             # 歌名 + 歌手一起搜，比只搜歌名准得多（"红豆"有几十个版本）
             kw = " ".join(x for x in (slots.get("artist"), slots.get("title")) if x)
             songs = await self.ne.search(kw, limit=30)
@@ -380,16 +595,7 @@ class MusicExecutor:
             # 没有它就只能按搜索排名挑，而搜索排名很差 —— 搜"红豆"时它把
             # 一堆翻唱排在王菲前面，按 pop 排立刻就对了。
             songs = await self.ne.songs([x.id for x in songs]) or songs
-            picked = _best(songs, slots.get("artist"), slots.get("title"))
-            if not picked:
-                return [], f"没找到《{slots['title']}》"
-            want = slots.get("artist")
-            if want and not _is_artist(picked, want):
-                # 找到了同名的歌，但不是他唱的。**必须说出来** —— 网易云上有大量
-                # 翻唱，而某些歌手的原唱压根不在这个平台上（版权在别家）。
-                # 默默放一个翻唱还说"播放周杰伦的稻香"，是在骗人。
-                return [picked], f"网易云上没有{want}的《{slots['title']}》，给你放{picked.label}"
-            return [picked], f"播放{picked.label}"
+            return self._pick_or_ask(songs, slots.get("artist"), str(slots["title"]))
 
         if slots.get("artist") and not slots.get("title"):
             songs = await self.ne.search(slots["artist"], limit=30)
@@ -402,10 +608,18 @@ class MusicExecutor:
             return [], f"没找到{slots['artist']}"
 
         if query:
-            songs = await self.ne.search(query, limit=20)
-            if songs:
-                return songs, f"播放{songs[0].label}"
-            return [], f"没找到「{query}」"
+            # 没抽出 title 槽的点歌。**这是最常见的说法** ——
+            # 规则层只在"某某的某某"这种形态下才填 title，而人多半直接说
+            # 「播放花儿与少年」。以前这里是"搜一下放第一个"，于是消歧
+            # 整个绕过去了（实测：离线试 _pick_or_ask 会问，走完整链路却直接放了
+            # 综艺版，因为压根没走到那个函数）。
+            #
+            # 把 query 当歌名交给同一个判断器，两条路的行为才是一致的。
+            songs = await self.ne.search(query, limit=30)
+            if not songs:
+                return [], f"没找到「{query}」"
+            songs = await self.ne.songs([x.id for x in songs]) or songs
+            return self._pick_or_ask(songs, None, query)
 
         return [], "你想听什么？"
 
@@ -433,7 +647,9 @@ class MusicExecutor:
                 return False, why
             songs, reply = await self._resolve(intent)
             if not songs:
-                return False, reply
+                # 队列空 + 有悬着的问题 = 我们问了一句，不是失败。
+                # 这个区分要传下去：ok=True 才会开追问窗口，用户才答得上。
+                return (True, reply) if self.pending else (False, reply)
             # 单曲请求要在**回话之前**就确认它能不能完整播放。
             # 否则用户先听到"播放王菲的《红豆》"，然后 45 秒戛然而止。
             if len(songs) == 1:
@@ -448,6 +664,27 @@ class MusicExecutor:
             self.queue, self.index, self._paused = songs, 0, None
             self._start(set_volume=True, new_queue=True)
             return True, reply
+
+        if a == "play_song":
+            # 消歧选完之后的落地：id 已经确定，不用再搜一遍。
+            # 单独一条 action 而不是塞回 play，是因为 play 会重新按歌名搜 ——
+            # 而我们刚刚问过用户，结果不能再被搜索排序改一次。
+            ok, why = await self._ensure_link()
+            if not ok:
+                return False, why
+            sid = int(intent.slots["song_id"])
+            songs = await self.ne.songs([sid])
+            if not songs:
+                return False, "这首歌拿不到了"
+            song = songs[0]
+            info = (await self.ne.play_info([sid])).get(sid)
+            if info is None:
+                return False, self.ne.why_no_url(song)
+            if info.is_trial:
+                return False, self.ne.why_trial(song, info)
+            self.queue, self.index, self._paused = [song], 0, None
+            self._start(set_volume=True, new_queue=True)
+            return True, f"播放{self._say(song)}"
 
         if a == "play_favorites":
             ok, why = await self._ensure_link()
