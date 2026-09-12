@@ -17,6 +17,10 @@ set -uo pipefail
 
 TARGET="${AIRPLAY_OUTPUT_NAME:-AirPlay}"
 SWITCH="$(command -v SwitchAudioSource || echo /opt/homebrew/bin/SwitchAudioSource)"
+# 上次是第几个猜中的。因为设备名读不到，只能挨个点 —— 而挨个点一轮要 30 秒，
+# 全花在"开面板 → 点一个 → 等 2.5 秒 → 问 SwitchAudioSource"这个循环上。
+# 记住答案之后常态是一次命中，3 秒。列表顺序变了也不怕：命中不了就退回全扫。
+HINT_FILE="${TMPDIR:-/tmp}/s31_airplay_index"
 
 current() { "$SWITCH" -c -t output 2>/dev/null; }
 
@@ -31,18 +35,23 @@ open_sound() {
 tell application "System Events" to tell process "ControlCenter"
   -- 先确保面板是关着的。点菜单栏项是 toggle：面板本来开着的话，
   -- 这一下会把它关掉，后面全盘失败 —— 踩过一次。
-  repeat 3 times
+  repeat 4 times
     if (count of windows) = 0 then exit repeat
     key code 53
-    delay 0.4
+    delay 0.5
   end repeat
-  click menu bar item 5 of menu bar 1
-  -- 等面板真的出现，而不是赌一个固定延时。赌固定值的时候
-  -- 机器一忙就 "Can't get window 1"，而这条链路本来就够脆了。
-  repeat 40 times
-    delay 0.1
+  -- 点开面板，**点不开就再点**。实测这一下会偶发失效（同样的脚本，
+  -- 有时 windows=1 有时 windows=0），多半是刚按下的 Esc 和这一次点击撞上了。
+  -- 一次点击就当它成功，是这个脚本之前最主要的不稳定来源。
+  repeat 4 times
     if (count of windows) > 0 then exit repeat
+    click menu bar item 5 of menu bar 1
+    repeat 25 times
+      delay 0.1
+      if (count of windows) > 0 then exit repeat
+    end repeat
   end repeat
+  if (count of windows) = 0 then return 0
   set g to UI element 1 of window 1
   repeat with i from 1 to (count of UI elements of g)
     set theId to "?"
@@ -95,11 +104,24 @@ if ! [[ "$N" =~ ^[0-9]+$ ]] || [ "$N" -le 1 ]; then
     exit 2
 fi
 
-# 第 1 个是标题(AXHeading)，从第 2 个开始才是设备
+# 第 1 个是标题(AXHeading)，从第 2 个开始才是设备。
+# 上次命中的那个排到最前面试。
+ORDER=""
+HINT=""
+[ -r "$HINT_FILE" ] && HINT="$(cat "$HINT_FILE" 2>/dev/null)"
+if [[ "$HINT" =~ ^[0-9]+$ ]] && [ "$HINT" -ge 2 ] && [ "$HINT" -le "$N" ]; then
+    ORDER="$HINT"
+fi
 for i in $(seq 2 "$N"); do
+    [ "$i" = "$HINT" ] && continue
+    ORDER="$ORDER $i"
+done
+
+for i in $ORDER; do
     click_nth "$i"
     sleep 2.5
     if [ "$(current)" = "$TARGET" ]; then
+        echo "$i" > "$HINT_FILE" 2>/dev/null
         echo "第 $i 个就是 Tivoli，已挂上 $TARGET"
         exit 0
     fi
