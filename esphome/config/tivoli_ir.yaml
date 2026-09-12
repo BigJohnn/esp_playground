@@ -30,6 +30,7 @@ switch:
     restore_mode: ALWAYS_ON
 
 remote_receiver:
+  id: ir_rx
   pin:
     number: GPIO14
     inverted: true
@@ -41,6 +42,32 @@ remote_transmitter:
   carrier_duty_percent: 50%
   non_blocking: true
 
+
+# The air conditioner speaks Coolix, decoded from its own remote on 2026-09-12.
+# Coolix sends the *entire machine state* in every frame -- power, mode, fan and
+# target temperature together -- as three bytes each followed by its complement
+# (captured: B24D FF00 D02F). Pressing "temp up" is not a discrete command; it
+# is a fresh full-state frame with a higher temperature. Proof from the capture:
+# power and temp-down produced byte-identical frames (0xB2FFD0 = 26 C) because
+# temp-up had moved it to 27 C (0xB2FF90) and temp-down moved it back.
+#
+# That makes the AC the one device here that is NOT open-loop. Every command is
+# an absolute state, so there is no counting, no drift, and no toggle to get out
+# of phase with -- the opposite of the Tivoli, whose whole design problem is that
+# POWER is a toggle and SOURCE is a cycle. So it gets a real climate entity
+# rather than three buttons: "turn on the AC" sets mode=cool, an absolute state,
+# instead of pressing a key that means "invert whatever you currently are".
+climate:
+  - platform: coolix
+    name: "Air Conditioner"
+    id: ac
+    # Receiving lets Home Assistant follow along when someone uses the physical
+    # remote -- the shadow state stays honest instead of silently rotting.
+    receiver_id: ir_rx
+    visual:
+      min_temperature: 17 °C
+      max_temperature: 30 °C
+      temperature_step: 1 °C
 
 # All commands share NEC address 0x6B86. Captured from the original
 # Tivoli Audio remote 2026-09-09..2026-09-10; every command byte pair
