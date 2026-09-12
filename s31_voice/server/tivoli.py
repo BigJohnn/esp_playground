@@ -132,22 +132,47 @@ class TivoliExecutor:
         return ok
 
     async def ensure_wifi(self) -> tuple[bool, str]:
-        """把设备弄到"开着 + 在 WiFi 源"这个已知状态上。"""
+        """把设备弄到"开着 + 链路通"这个已知状态上。
+
+        **按 POWER 之前必须先确认设备真的不可达。** 这一条是踩出来的，而且踩得很准：
+        早先这里的逻辑是"锚定失败 -> 按 POWER 试试看"，看起来合理 ——
+        但 anchor() 失败有两个完全不同的原因，一个是设备关着，另一个是
+        macOS 这头的 AirPlay 链路断了（**只要听一次收音机就会断**，是主路径不是异常）。
+        两者混在一起的后果是：用户切去听 FM，再说一句"打开收音机"，
+        代码读到锚定失败、按下 POWER，**把一台开着的收音机关掉了**。
+
+        POWER 是 toggle，在错误前提下按它是破坏性的，而且没有回执能发现按错了。
+        所以判据必须是"网络层面真的够不着"（reachable），不是"推不了流"（anchor）。
+        """
         if await self.anchor():
             return True, ""
-        # 第一次没锚上。两种可能：关着的，或者开着但停在别的源上。
-        # 按一下 POWER 再试 —— 如果原来是关的，这一下就开了；
-        # 如果原来是开的，这一下把它关了，第二次锚定也会失败，我们就知道不是电源问题。
-        _LOG.info("第一次锚定失败，按 POWER 再试一次")
+
+        # 锚定失败了，先分清是哪一种失败
+        if await self.air.reachable():
+            # 设备在电、在网 —— 只是链路没挂上，而 anchor() 里已经试过重挂并且失败了。
+            # 这种情况**绝不能**碰 POWER：它是好的，按下去只会把它弄坏。
+            return False, "接不上音响的 AirPlay，检查一下辅助功能权限给了没有"
+
+        # 到这儿意味着要走"按 POWER + 等它重新入网"这条路，而那是**半分钟起步**的
+        # （实测开机到重新上网 28 秒）。这条路不能同步做完再回话 ——
+        # 用户说完「打开收音机」之后会盯着一分钟的沉默，然后认定坏了（实测 57 秒）。
+        # 所以调用方要能提前知道"这次会很久"，先说一句话安抚，剩下的后台做。
+        _LOG.info("设备网络层面不可达，按 POWER 唤醒（要等它重新入网，约半分钟）")
         if not await self.press("power"):
             return False, "红外发不出去，检查一下 tivoli-ir 那块板子在不在线"
-        await asyncio.sleep(self.conf["power_settle_ms"] / 1000.0)
+        # 开机到重新入网实测要 28 秒，power_settle_ms 那三秒远远不够，所以这里轮询等
+        deadline = time.time() + 40
+        while time.time() < deadline:
+            await asyncio.sleep(3)
+            if await self.air.reachable():
+                break
+        else:
+            # 一直没上线：可能它本来就是开着但掉网了，而我们刚把它关了。按回去。
+            await self.press("power")
+            return False, "音响连不上，可能是掉网了"
         if await self.anchor():
             return True, ""
-        # 两次都不成：要么它现在被我们按关了，要么它压根不在网上。
-        # 把 POWER 按回去，别留下一个我们改过又不知道改成什么的状态。
-        await self.press("power")
-        return False, "音响连不上，可能是掉网了"
+        return False, "音响开起来了，但 AirPlay 链路挂不上"
 
     async def ensure_fm(self) -> tuple[bool, str]:
         """锚定 -> 从 WiFi 数 k 次 SOURCE 落到 FM。整套方案的核心动作。"""
@@ -187,6 +212,10 @@ class TivoliExecutor:
         return True, "本来就是关的，我给你关回去了"
 
     # ---------- 动作 ----------
+
+    async def needs_cold_start(self) -> bool:
+        """这次操作要不要走"开机 + 等入网"那条慢路。"""
+        return not await self.air.reachable()
 
     async def execute(self, intent: Intent) -> tuple[bool, str]:
         async with self._lock:
@@ -280,9 +309,12 @@ class TivoliExecutor:
             if await self.air.linked():
                 cur = await self.air.volume()
                 if cur is not None:
-                    # intent 里的 step 是"按几下红外"的意思（±3）。换算到绝对音量时
-                    # ×5 会一档跳 15%，太粗；×3 是 9%，接近一次手动微调的幅度。
-                    target = max(0.0, min(100.0, cur + step * 3))
+                    # intent 里的 step 是"按几下红外"的意思（±3）。
+                    # 换算到绝对音量不能用固定步长：实测音量 13 时降一档变成 4，
+                    # 相对降了 70%，几乎等于静音。人对响度的感知是对数的，
+                    # 所以低音量时要走小步。按当前值的比例调，再兜一个最小步长。
+                    delta = max(3.0, abs(cur) * 0.25) * (1 if step > 0 else -1)
+                    target = max(0.0, min(100.0, cur + delta))
                     if await self.air.set_volume(target):
                         return True, "调大了" if step > 0 else "调小了"
             key = "volume_up" if step > 0 else "volume_down"
