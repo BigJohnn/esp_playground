@@ -44,6 +44,7 @@ static QueueHandle_t s_action_queue;
  * （等服务端、点灯、恢复状态）完全一样，分成两条只会重复。 */
 typedef struct {
     bool is_utterance;      /* true: pcm 是一整段没认出来的话；false: text 是命令词 */
+    bool is_followup;       /* 这一轮是追问窗口（没说唤醒词） */
     char text[48];
     const int16_t *pcm;
     size_t samples;
@@ -207,6 +208,7 @@ static void on_sr_event(const sr_result_t *res, void *ctx)
         break;
     case SR_EVENT_UTTERANCE:
         act.is_utterance = true;
+        act.is_followup = res->is_followup;
         act.pcm = res->pcm;
         act.samples = res->samples;
         /* 队列满就直接把录音还回去，否则 sr 那边会一直以为有人在用它。 */
@@ -242,11 +244,15 @@ static void recover_if_unreachable(esp_err_t err)
 #define FOLLOWUP_MS      3500
 #define FOLLOWUP_MAX     5
 static int s_followup_left;
+/* 当前这个窗口是不是"我们问了问题在等回答"。由服务端在回复里带下来。
+ * 只影响一件事：窗口里没听懂时该不该出声。见 net.h 里 net_followup_t 的说明。 */
+static bool s_asking;
 
-static void arm_followup(bool wanted)
+static void arm_followup(const net_followup_t *fu)
 {
-    if (!wanted) {
+    if (!fu || !fu->wanted) {
         s_followup_left = 0;
+        s_asking = false;
         return;
     }
     if (s_followup_left <= 0) {
@@ -254,11 +260,18 @@ static void arm_followup(bool wanted)
     }
     if (--s_followup_left <= 0) {
         ESP_LOGI(TAG, "连续对话到上限了，下一句要重新唤醒");
+        s_asking = false;
         return;
     }
-    ESP_LOGI(TAG, "继续听（还剩 %d 轮）", s_followup_left);
+    /* 窗口长度由服务端给，它才知道刚才说出去的是什么。
+     * 3500ms 在「好的」后面正好，在"一，黑鸭子；二，龚玥；三，…要哪个？"
+     * 后面完全不够 —— 用户还没张嘴窗口就关了。 */
+    int ms = (fu->ms > 0) ? fu->ms : FOLLOWUP_MS;
+    s_asking = fu->asking;
+    ESP_LOGI(TAG, "继续听 %d ms（还剩 %d 轮%s）", ms, s_followup_left,
+             s_asking ? "，在等回答" : "");
     led_set(0, 0, 24);                    /* 蓝：不用唤醒词，直接说 */
-    sr_listen_again(FOLLOWUP_MS);
+    sr_listen_again(ms);
 }
 
 static void do_command(const action_t *act)
@@ -268,11 +281,13 @@ static void do_command(const action_t *act)
     bool ok = false;
     net_timing_t t = { 0 };
     int64_t t0 = esp_timer_get_time();
-    bool followup = false;
-    esp_err_t err = net_send_command(act->text, reply, sizeof(reply), &ok, &followup, &t);
+    net_followup_t fu = { 0 };
+    esp_err_t err = net_send_command(act->text, reply, sizeof(reply), &ok, &fu, &t);
     int ms = (int)((esp_timer_get_time() - t0) / 1000);
     if (err == ESP_OK) {
-        arm_followup(followup);
+        /* 这条路不念回话（灯自己亮/灭就是最快的反馈），所以开窗没有"等我说完"
+         * 的问题，收到响应就能开。兜底那条路不一样，见 do_utterance。 */
+        arm_followup(&fu);
         /* 拆成"服务端里"和"网络上"两段。快路径本来就只有几百毫秒，
          * 再快就得知道那几百毫秒到底是谁的 —— 灯泡自己（exec）还是 Wi-Fi。 */
         ESP_LOGI(TAG, "「%s」-> %s (%s, %d ms = 服务端 %d[控灯 %d] + 网络 %d)",
@@ -297,11 +312,27 @@ static void do_utterance(const action_t *act)
     bool ok = false;
     net_timing_t t = { 0 };
     int64_t t0 = esp_timer_get_time();
+    net_followup_t fu = { 0 };
     esp_err_t err = net_send_utterance(act->pcm, act->samples * sizeof(int16_t),
-                                       heard, sizeof(heard), reply, sizeof(reply), &ok, &t);
+                                       heard, sizeof(heard), reply, sizeof(reply), &ok,
+                                       &fu, &t);
     /* 音频已经发完，缓冲马上还回去，下一句话才录得上。 */
     sr_release_utterance();
 
+    if (err == ESP_OK && !ok && act->is_followup && !s_asking) {
+        /* 追问窗口里没听懂，而且**我们并没有在问问题** —— 安静地算了。
+         * 窗口是我们自己开的；屋里随便一点动静都会走到这儿，
+         * 而对着动静说"这个我还不会"比什么都不说糟得多
+         * （实测：每条成功的命令后面都跟一句，对着空气）。
+         *
+         * s_asking 时这个前提就不成立了：用户刚被我们问了"要哪个"，
+         * 他答了一句，系统一声不吭 —— 他分不清是没听见还是答错了。
+         * 所以那种情况要往下走，把回话念出来。 */
+        ESP_LOGI(TAG, "追问窗口里没听懂（听成「%s」），不出声", heard);
+        led_set(0, 24, 0);
+        arm_followup(&fu);
+        return;
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "兜底请求失败: %s", esp_err_to_name(err));
         led_set(24, 0, 0);
@@ -326,6 +357,15 @@ static void do_utterance(const action_t *act)
         led_blink(24, 16, 0, 2);     /* 黄：收到了，但这件事做不了 */
     }
     voice_say(reply);
+    /* 开窗放在 voice_say **之后**。它是阻塞的（写 DMA + 补一段静音 + 解除静音），
+     * 所以这一行执行到的时刻，正好是喇叭刚停下来的那一刻 —— 窗口从用户
+     * 能开口的时候才开始计时。放在前面的话，"一，黑鸭子；二，…要哪个？"
+     * 这句话本身就要念五六秒，7 秒的窗口全花在听自己说话上。
+     *
+     * 这也是兜底路径以前根本没有连续对话的原因：这里压根没调过 arm_followup，
+     * 于是"不用再说唤醒词"只对板上那十几条命令词成立，而点歌这类必须走
+     * 服务端 ASR 的请求，窗口从来就没开过。 */
+    arm_followup(&fu);
 }
 
 /* 没接喇叭时的开机自检：往 DAC 送一段 1kHz，看它有没有从 ES8311 的回环通道

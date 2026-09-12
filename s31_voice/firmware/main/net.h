@@ -52,8 +52,24 @@ esp_err_t net_fetch_commands_version(char *out_version, size_t version_len);
  * 此刻板子正要开始收命令词，这条请求绝不能挡在那条路上。 */
 void net_notify_wake(void);
 
+/* 追问窗口。服务端在每次回复里一起告诉板子三件事：
+ *   wanted  这一句之后要不要不用唤醒词接着听
+ *   ms      听多久。0 = 用板子的默认值（FOLLOWUP_MS）
+ *   asking  我们是不是**真的问了用户一个问题**
+ *
+ * asking 单独一个字段，是因为"窗口里没听懂"在两种情况下该有相反的反应：
+ * 平时窗口是我们自己开的，屋里一点动静就会走到那儿，这时候出声比沉默糟得多
+ * （实测：每条成功命令后面都跟一句"这个我还不会"，对着空气）。
+ * 但我们刚问完"要哪个"的时候，沉默才是错的 —— 用户答了一句，系统一声不吭，
+ * 他分不清是没听见还是答错了。 */
+typedef struct {
+    bool wanted;
+    int  ms;
+    bool asking;
+} net_followup_t;
+
 esp_err_t net_send_command(const char *text, char *reply, size_t reply_len, bool *out_ok,
-                           bool *out_followup,
+                           net_followup_t *out_fu,
                            net_timing_t *timing);
 
 /* ---- 兜底路径（M4）---- */
@@ -63,6 +79,7 @@ esp_err_t net_send_command(const char *text, char *reply, size_t reply_len, bool
 esp_err_t net_send_utterance(const void *pcm, size_t bytes,
                              char *text, size_t text_len,
                              char *reply, size_t reply_len, bool *out_ok,
+                             net_followup_t *out_fu,
                              net_timing_t *timing);
 
 /* POST /tts：边收边回调，回调里直接往 codec 写。

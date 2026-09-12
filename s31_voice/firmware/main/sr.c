@@ -68,6 +68,14 @@ static volatile bool s_muted;         /* 放 TTS 期间喂静音，见 sr_set_mu
  * 不等唤醒词。用 volatile int 而不是加锁 —— 写的一边只写、读的一边读完就清零，
  * 这个竞态最坏的结果是窗口晚开一帧（32ms），不值得为它引入一把锁。 */
 static volatile int s_relisten_ms;
+/* 这一轮是不是追问窗口（不是由唤醒词开的）。消费者要知道，
+ * 因为"没听懂"在两种窗口里该有完全不同的反应 —— 见 sr.h 里 is_followup 的说明。 */
+static bool s_in_followup;
+/* 追问窗口里一段录音至少要多长才值得发上去。
+ * 0.7 秒这个数是踩出来的：窗口一开就会录到上一句的尾音和房间回声，
+ * 攒够 0.7 秒 VAD 就判"说完了"，于是每条成功的命令后面都跟一句
+ * 对着空气说的「这个我还不会」。真人的追问（"下一首"）至少 0.8 秒。 */
+#define FOLLOWUP_MIN_MS  900
 
 /* VAD 判静音之后再确认多久算一句话说完。
  * 只要 240ms 就够，因为 vadnet1_medium 自己已经有 992ms 的迟滞
@@ -294,7 +302,7 @@ static void emit(sr_event_t ev, int id, const char *text, float prob,
     }
     sr_result_t r = {
         .event = ev, .command_id = id, .text = text, .prob = prob,
-        .pcm = pcm, .samples = samples,
+        .pcm = pcm, .samples = samples, .is_followup = s_in_followup,
     };
     s_cb(&r, s_ctx);
 }
@@ -359,6 +367,7 @@ static void detect_task(void *arg)
                  * 「打开收音机」「下一首」这类不在表里的话，会被**静默丢弃** ——
                  * 没有回话、没有灯、什么都没有，看起来就是坏了。 */
                 recording = (s_rec != NULL) && !s_rec_busy;
+                s_in_followup = true;
                 s_afe->disable_wakenet(s_afe_data);
                 s_mn->clean(s_mn_data);
                 emit(SR_EVENT_WAKE, -1, NULL, 0.0f, NULL, 0);
@@ -378,6 +387,7 @@ static void detect_task(void *arg)
             }
             ESP_LOGI(TAG, "听到唤醒词（第 %d 个词）", res->wake_word_index);
             listening = true;
+            s_in_followup = false;
             listen_until = esp_timer_get_time() +
                            (int64_t)CONFIG_S31_COMMAND_TIMEOUT_MS * 1000;
             rec_len = 0;
@@ -449,6 +459,13 @@ static void detect_task(void *arg)
             bool worth_sending = spoke || !armed;
             if (!worth_sending) {
                 ESP_LOGI(TAG, "唤醒后没人说话，回到待唤醒");
+                emit(SR_EVENT_TIMEOUT, -1, NULL, 0.0f, NULL, 0);
+            } else if (s_in_followup &&
+                       rec_len < (size_t)(16000 / 1000 * FOLLOWUP_MIN_MS)) {
+                /* 追问窗口里录到的东西太短，基本可以断定是尾音/回声而不是人说话。
+                 * 安静地丢掉 —— 这一轮我们没有在问用户问题，
+                 * 对着噪音回一句"这个我还不会"比什么都不说更糟。 */
+                ESP_LOGI(TAG, "追问窗口只录到 %.2fs，当噪音丢掉", rec_len / 16000.0f);
                 emit(SR_EVENT_TIMEOUT, -1, NULL, 0.0f, NULL, 0);
             } else if (recording && rec_len > 0) {
                 /* 掐掉开口之前的那段静音 —— 唤醒词和命令词之间人总要停一下，

@@ -21,6 +21,11 @@ typedef struct {
     float prob;           /* 仅 SR_EVENT_COMMAND */
     const int16_t *pcm;   /* 仅 SR_EVENT_UTTERANCE：16k/16bit 单声道，AFE 处理后的 */
     size_t samples;       /* 仅 SR_EVENT_UTTERANCE */
+    /* 这一轮是追问窗口（没说唤醒词）还是正常唤醒。
+     * 消费者要据此决定"没听懂"时说不说话：正常唤醒时用户
+     * 确实在对我们说话，听不懂要讲出来；追问窗口里多半只是
+     * 屋里有动静，这时候开口是骚扰。 */
+    bool is_followup;
 } sr_result_t;
 
 typedef void (*sr_event_cb_t)(const sr_result_t *res, void *ctx);
