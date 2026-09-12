@@ -149,18 +149,31 @@ class LightExecutor:
 # 所以有了 Router。它不碰任何硬件，只做分发和这两件事。
 # ---------------------------------------------------------------------------
 
+# 说完这些之后，自然没有下文 —— 开追问窗口是白开，只是平白多几秒麦克风暴露。
+# 判据很朴素：这句话本身就是一个终点（关掉、停止），而不是一个中间步骤。
+_TERMINAL = {
+    ("light", "off"),
+    ("tivoli", "power_off"),
+    ("aircon", "off"),
+    ("music", "stop"),
+}
+
+
 class Router:
-    def __init__(self, light: "LightExecutor", tivoli=None, music=None, llm=None) -> None:
+    def __init__(self, light: "LightExecutor", tivoli=None, music=None,
+                 aircon=None, llm=None) -> None:
         self.light = light
         self.tivoli = tivoli
         self.music = music
+        self.aircon = aircon
         self.llm = llm
         # 上一次**成功**操作的设备。失败的不算 —— 一条没执行成的命令不该改变
         # 后面那句"关掉"的含义。
         self.last_domain: str | None = None
 
     def _for(self, domain: str):
-        return {"light": self.light, "tivoli": self.tivoli, "music": self.music}.get(domain)
+        return {"light": self.light, "tivoli": self.tivoli,
+                "music": self.music, "aircon": self.aircon}.get(domain)
 
     async def parse_and_execute(self, text: str) -> tuple[Intent, bool, str]:
         """一句话进来，走完三层意图 + 执行。返回 (最终意图, 是否执行了, 回话)。"""
@@ -178,6 +191,17 @@ class Router:
 
         ok, reply = await self.execute(parsed)
         return parsed, ok, reply
+
+    def wants_followup(self, intent: Intent, ok: bool) -> bool:
+        """这一句之后该不该不用唤醒词就继续听。
+
+        只在**成功**之后开窗。失败意味着我们本来就没听懂，这时候开窗
+        是在邀请更多混乱 —— 用户多半会重复一遍或者换个说法，
+        而那恰恰是最该走完整唤醒流程、让识别从干净状态重来的时候。
+        """
+        if not ok or intent.domain == "none":
+            return False
+        return (intent.domain, intent.action) not in _TERMINAL
 
     async def execute(self, intent: Intent) -> tuple[bool, str]:
         if intent.domain == "none" or intent.action == "none":
@@ -199,4 +223,7 @@ class Router:
             out["tivoli"]["measured"] = bool(self.tivoli.conf.get("measured"))
         if self.music is not None:
             out["music"] = self.music.status()
+        if self.aircon is not None:
+            # 空调是唯一一个状态**读得回来**的设备，所以这里给的是真值不是影子
+            out["aircon"] = {"entity": self.aircon.entity}
         return out

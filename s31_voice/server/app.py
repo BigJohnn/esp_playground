@@ -6,6 +6,7 @@
   GET  /commands/version 只回版本号，几十字节 —— 板子轮询用这个，不是上面那个
   POST /stt              裸 PCM / wav -> 文本
   POST /tts              文本 -> 16k PCM
+  POST /wake             板子听到唤醒词就打这条，服务端立刻把音乐压低（见下面的注释）
   POST /command          文本 -> 解析意图、控设备、返回回话（板上 MultiNet 认出来后走这条）
   POST /utterance        整段 PCM -> STT -> 控设备（板上没认出来的兜底）
   GET  /devices          三台设备各自的状态（Tivoli 那栏是影子状态，不是真相）
@@ -40,6 +41,7 @@ from fastapi.responses import JSONResponse, Response
 
 import discovery
 import intent as intent_mod
+from aircon import AirconExecutor
 from airplay import AirPlay
 from config import CONFIG
 from executor import LightExecutor, Router
@@ -66,11 +68,12 @@ _tivoli: TivoliExecutor
 _music: MusicExecutor
 _ne: Netease
 _llm: LocalLLM
+_aircon: AirconExecutor
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _ha, _exec, _router, _air, _tivoli, _music, _ne, _llm
+    global _ha, _exec, _router, _air, _tivoli, _music, _ne, _llm, _aircon
     _ha = HomeAssistant()
     _exec = LightExecutor(_ha)
     if not CONFIG.ha_token:
@@ -82,7 +85,8 @@ async def lifespan(app: FastAPI):
     _ne = Netease()
     _llm = LocalLLM()
     _music = MusicExecutor(_ne, _air, _tivoli, _llm)
-    _router = Router(_exec, tivoli=_tivoli, music=_music, llm=_llm)
+    _aircon = AirconExecutor(_ha)
+    _router = Router(_exec, tivoli=_tivoli, music=_music, aircon=_aircon, llm=_llm)
 
     if not CONFIG.airplay_password:
         _LOG.warning("AIRPLAY_PASSWORD 没设，推流会被拒 —— 密码在设备自己的配置页上")
@@ -234,9 +238,53 @@ async def tivoli_hold_frames(value: int):
     return {"ok": True, "hold_frames": int(value)}
 
 
+# 唤醒词一响就压音量，而不是等命令说完。
+# 起因是实测：放着歌说「播放我喜爱的音乐」，服务端收到的是「🎼我唱唱给的算」——
+# `🎼` 是 SenseVoice 的"这段是音乐"标记，也就是说麦克风那一端就已经输了，
+# 规则层再聪明也没用。而唤醒词和命令词之间有 0.5~1 秒间隔，足够把音量压下去，
+# 让**第一句命令**就落在安静背景上。
+#
+# 这件事只有我们做得到：音乐是我们自己推的，音量归我们管。
+_DUCK_LEVEL = float(os.environ.get("DUCK_VOLUME", "12"))
+_DUCK_SECONDS = float(os.environ.get("DUCK_SECONDS", "8"))
+
+
+@app.post("/wake")
+async def wake():
+    """板子听到唤醒词时打这个，越快越好。
+
+    刻意做成"发完就不管"：板子那边绝不能等这个请求的结果 ——
+    它此刻正要开始收命令词，多等一毫秒都是在关键路径上。
+    """
+    t = _Timer()
+    asyncio.create_task(_air.duck(_DUCK_LEVEL, _DUCK_SECONDS))
+    return {"ok": True, "ms": t.done()}
+
+
 @app.get("/music/status")
 async def music_status():
     return _music.status()
+
+
+# 要开机的 Tivoli 动作：这几条会触发"按 POWER + 等重新入网"，半分钟起步。
+_TIVOLI_SLOW = {"radio_on", "power_on", "preset_recall", "preset_save", "station_step"}
+
+
+async def _maybe_defer(parsed) -> tuple[bool, str] | None:
+    """慢动作转后台，先回一句实话。
+
+    起因是实测：Tivoli 关着时说「打开收音机」，整条命令花了 **57 秒**才返回 ——
+    按 POWER、等它重新入网（28 秒）、再锚定。这期间板子一声不吭，
+    用户的结论必然是"坏了"，然后再说一遍，于是又排一个 57 秒。
+
+    把"慢"变成"说清楚要慢"，是这里唯一能做的诚实处理：设备就是要那么久开机。
+    """
+    if parsed.domain != "tivoli" or parsed.action not in _TIVOLI_SLOW:
+        return None
+    if not await _tivoli.needs_cold_start():
+        return None
+    asyncio.create_task(_router.execute(parsed))
+    return True, "音响关着，我先给你开起来，得等半分钟"
 
 
 def _commands_payload() -> dict:
@@ -300,12 +348,21 @@ async def command_endpoint(request: Request):
     t = _Timer()
     payload = await request.json()
     text = payload.get("text", "")
-    parsed, ok, reply = await _router.parse_and_execute(text)
+    parsed = intent_mod.parse(text, _router.last_domain)
+    deferred = await _maybe_defer(parsed)
+    if deferred is not None:
+        ok, reply = deferred
+    else:
+        parsed, ok, reply = await _router.parse_and_execute(text)
     t.mark("exec")
-    _LOG.info("命令词 %r 意图=%s.%s(%s) 执行=%s  [%s]", text, parsed.domain, parsed.action,
-              parsed.rule, ok, _fmt_ms(t.marks))
+    followup = _router.wants_followup(parsed, ok)
+    if followup:
+        # 追问窗口期间继续压着 —— 上一轮的压制马上就要到期了
+        asyncio.create_task(_air.duck(_DUCK_LEVEL, _DUCK_SECONDS))
+    _LOG.info("命令词 %r 意图=%s.%s(%s) 执行=%s 追问=%s  [%s]", text, parsed.domain,
+              parsed.action, parsed.rule, ok, followup, _fmt_ms(t.marks))
     return JSONResponse({"text": text, "domain": parsed.domain, "action": parsed.action,
-                         "rule": parsed.rule, "slots": parsed.slots,
+                         "rule": parsed.rule, "slots": parsed.slots, "followup": followup,
                          "ok": ok, "reply": reply, "ms": t.done()})
 
 
@@ -338,15 +395,23 @@ async def utterance_endpoint(request: Request):
         _LOG.info("原始音频存到 %s", path)
     text = await asyncio.to_thread(STT.transcribe_array, audio, rate)
     t.mark("stt")
-    parsed, ok, reply = await _router.parse_and_execute(text)
+    parsed = intent_mod.parse(text, _router.last_domain)
+    deferred = await _maybe_defer(parsed)
+    if deferred is not None:
+        ok, reply = deferred
+    else:
+        parsed, ok, reply = await _router.parse_and_execute(text)
     t.mark("exec")
+    followup = _router.wants_followup(parsed, ok)
+    if followup:
+        asyncio.create_task(_air.duck(_DUCK_LEVEL, _DUCK_SECONDS))
     # 顺带记一个"识别快过实时多少倍"：STT 慢是慢在模型还是慢在这句话太长，
     # 只看绝对毫秒数分不出来。
     _LOG.info("兜底 %.2fs 音频 -> %r 意图=%s.%s(%s) 执行=%s  [%s, %.1fx 实时]", secs, text,
               parsed.domain, parsed.action, parsed.rule, ok, _fmt_ms(t.marks),
               secs * 1000 / max(t.marks["stt"], 1))
     return JSONResponse({"text": text, "domain": parsed.domain, "action": parsed.action,
-                         "rule": parsed.rule, "slots": parsed.slots,
+                         "rule": parsed.rule, "slots": parsed.slots, "followup": followup,
                          "ok": ok, "reply": reply, "ms": t.done()})
 
 

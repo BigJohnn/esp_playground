@@ -71,6 +71,8 @@ class AirPlay:
         self.name = name or None
         self._last_ok: float | None = None
         self._play: asyncio.subprocess.Process | None = None
+        self._duck_task: asyncio.Task | None = None
+        self._duck_from: float | None = None
 
     # ---------- 探活 ----------
 
@@ -212,6 +214,39 @@ class AirPlay:
     # 系统音量就是 Tivoli 的音量 —— AirPlay 输出时两者是同一个旋钮。
     # 这比红外的 VOL± 好：红外是相对的、开环的，按几次全靠记账，
     # 而记账一定会跟实体遥控器的操作对不上。这里给的是绝对值。
+
+    async def duck(self, level: float, seconds: float) -> None:
+        """把音量压下去一段时间，然后自动恢复。**连续对话能不能成立全靠它。**
+
+        板子的识别在 SNR 掉到 5dB 时就崩（实测唤醒 1/6），而音乐一响就是那个量级 ——
+        今晚现场看到过：服务端收到的是「🎼我唱唱给的算」，`🎼` 是 SenseVoice 的
+        "这段是音乐"标记，也就是说在麦克风那一端就已经输了，规则层再聪明也没用。
+
+        而音乐是**我们自己推的**，音量归我们管 —— 这是唯一能正面打赢那条悬崖的办法。
+        别人做不到，是因为他们不掌握声源。
+
+        重入是安全的：第二次 duck 会取消上一次的恢复任务，并沿用**最早**那个原始音量，
+        否则连续几轮对话会把"原始音量"一路记成压低后的值，最后再也恢复不回去。
+        """
+        cur = await self.volume()
+        if cur is None:
+            return
+        if self._duck_task is not None and not self._duck_task.done():
+            self._duck_task.cancel()
+        else:
+            self._duck_from = cur          # 只有不在压制中时才记原始值
+        if cur > level:
+            await self.set_volume(level)
+        self._duck_task = asyncio.create_task(self._unduck_after(seconds))
+
+    async def _unduck_after(self, seconds: float) -> None:
+        try:
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            return
+        if self._duck_from is not None:
+            await self.set_volume(self._duck_from)
+            self._duck_from = None
 
     async def set_volume(self, pct: float) -> bool:
         pct = max(0.0, min(100.0, float(pct)))

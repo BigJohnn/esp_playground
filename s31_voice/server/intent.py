@@ -8,6 +8,7 @@
     light   台灯          -> executor.LightExecutor（miIO 直连）
     tivoli  Tivoli 的红外  -> tivoli.TivoliExecutor（HA -> ESPHome -> 红外 LED）
     music   Tivoli 的网络  -> player.MusicExecutor（网易云 -> AirPlay 推流）
+    aircon  空调          -> aircon.AirconExecutor（Coolix 状态帧，**唯一不开环的**）
 
 tivoli 和 music 是同一台机器的两条**互斥**通路（红外那条在 FM 源上，
 推流那条在 WiFi 源上），分开是因为它们的失败模式完全不同 ——
@@ -24,7 +25,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
-Domain = Literal["light", "tivoli", "music", "none"]
+Domain = Literal["light", "tivoli", "music", "aircon", "none"]
 
 # 中文数字 -> 阿拉伯数字，够用即可
 _CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
@@ -151,6 +152,9 @@ _PCT_RE = re.compile(
 # 预设序号：中文或阿拉伯，1-6
 _N = r"([一二两三四五六1-6])"
 
+# 空调温度：17~30 度，说法有"二十六度""26度""26"
+_TEMP = r"([0-9]{2}|[一二三四五六七八九十]+)\s*(?:度|℃)"
+
 # "播放…"的动词前缀。单独拎出来是因为 music 的 catch-all 规则要用它，
 # 而它极其贪婪 —— 必须排在所有 music 专有规则**之后**。
 # (?!光) 因为"来点光"是灯 —— music 的规则排在 light 前面，不躲开就被它抢走了
@@ -173,8 +177,16 @@ _RULES: list[tuple[str, Domain, re.Pattern[str]]] = [
     # 音量和"关"都必须排在 radio_on 前面。radio_on 的动词前缀是可选的
     # （"收音机"三个字本身就算数），所以「帮我把收音机声音关小一些」和
     # 「关掉收音机」里都含着它 —— 顺序反了，这两句都会变成"开收音机"。
-    ("volume_up", "tivoli", re.compile(r"(?:声音|音量)(?:调)?大|大点声|大声(?:一)?点|太小声|听不(?:太)?清")),
-    ("volume_down", "tivoli", re.compile(r"(?:声音|音量)(?:调|关|放)?小|小点声|小声(?:一)?点|太吵|(?:声音|音量)太大")),
+    # 「大/小」和「高/低」都要认。实测踩过：只写了「声音小」，
+    # 用户说的是「声音低一点」，结果被空调的降温规则抢走了。
+    # 两种语序都要认：「音量调低」和「调低音量」。中文里动词前置很常见，
+    # 只写一种的代价是另一种整句掉进服务端 ASR 兜底 —— 而兜底在有音乐时基本废掉。
+    ("volume_up", "tivoli", re.compile(
+        r"(?:声音|音量)(?:调)?[大高]|(?:调|开)?[大高](?:一)?点?(?:声音|音量)"
+        r"|大点声|大声(?:一)?点|太小声|听不(?:太)?清")),
+    ("volume_down", "tivoli", re.compile(
+        r"(?:声音|音量)(?:调|关|放)?[小低]|(?:调|关|放)?[小低](?:一)?点?(?:声音|音量)"
+        r"|小点声|小声(?:一)?点|太吵|(?:声音|音量)太大")),
     ("tivoli_off", "tivoli", re.compile(
         r"关(?:掉|闭|上|了)?(?:一下)?(?:音响|音箱|收音机|广播|电台|调频)"
         r"|(?:音响|音箱|收音机|广播|电台)(?:关(?:掉|了|上))")),
@@ -184,15 +196,42 @@ _RULES: list[tuple[str, Domain, re.Pattern[str]]] = [
 
     # ---------------- 2. 音乐专有（网络）----------------
     ("music_favorites", "music", re.compile(
-        r"我(?:的)?收藏|我喜欢的(?:音乐|歌)?|我收藏的(?:歌|音乐)?|收藏(?:的)?(?:歌|列表)|红心歌曲")),
+        r"我(?:的)?收藏|我(?:喜欢|喜爱|爱听)的(?:音乐|歌|歌曲)?|我收藏的(?:歌|音乐)?"
+        r"|收藏(?:的)?(?:歌|列表)|红心歌曲|我的歌单")),
     ("music_next", "music", re.compile(r"下一首|下首|换一首|换首|切歌|跳过这首")),
     ("music_prev", "music", re.compile(r"上一首|上首|前一首|回上一首|重放这首")),
     ("music_pause", "music", re.compile(r"暂停|停一下|先停")),
     ("music_resume", "music", re.compile(r"继续(?:播放|放)?|接着放|接着听")),
     ("music_stop", "music", re.compile(r"停止播放|别放了|不听了|关掉音乐|关了音乐")),
+    # 播放模式。排在 music_play 前面 —— 「随机播放」里含「播放」，
+    # 不然会被 catch-all 抓成"播放一首叫《随机》的歌"。
+    # 「否定式」必须排在肯定式前面：「别随机了」里含着「随机」，
+    # 反过来的话它会被判成"打开随机播放"，正好和用户要的相反。
+    ("mode_sequential", "music", re.compile(r"顺序播放|顺序(?:模式)?|按顺序(?:放|播)?|[别不]要?随机")),
+    ("mode_shuffle",    "music", re.compile(r"随机播放|随机(?:模式)?|打乱(?:播放|顺序)?|随便放")),
+    ("mode_repeat_one", "music", re.compile(r"单曲循环|循环这(?:一)?首|一直放这(?:一)?首|重复这首")),
+    ("mode_repeat_all", "music", re.compile(r"列表循环|循环播放|全部循环|一直放下去")),
     ("music_now", "music", re.compile(r"(?:现在|正在|这)(?:放|听|唱)的?是什么|这是什么歌|什么歌|"
                                       r"这首歌?叫什么|歌名(?:是什么)?")),
     ("music_play", "music", re.compile(_PLAY_VERB + r"(.{1,40})$")),
+
+    # ---------------- 2.5 空调专有 ----------------
+    # 排在灯前面，理由和 tivoli 一样：「打开空调」和「打开台灯」共享「打开」。
+    # 而「空调」这两个字是它的护照，带上就不会跟别的设备抢。
+    ("ac_off",      "aircon", re.compile(r"关(?:掉|闭|上|了)?(?:一下)?空调|空调关(?:掉|了|上)?|别吹了")),
+    ("ac_set_temp", "aircon", re.compile(r"空调.{0,4}?" + _TEMP + r"|" + _TEMP + r".{0,2}空调"
+                                         r"|(?:调|设|开)到\s*" + _TEMP)),
+    # **必须带设备名**（空调/温度/度数），不能是裸的「高一点」「低一点」——
+    # 那两个说法对音量同样成立，而音量是更高频的用法。
+    # 只有「太热了」这类描述体感的说法才允许不带设备名：屋里热跟音响没关系。
+    ("ac_warmer",   "aircon", re.compile(
+        r"(?:空调|温度|度数).{0,3}?(?:调)?[高热暖](?:一)?点"
+        r"|太冷了|冷死了|有点冷|冻死")),
+    ("ac_cooler",   "aircon", re.compile(
+        r"(?:空调|温度|度数).{0,3}?(?:调)?[低冷凉](?:一)?点"
+        r"|太热了|热死了|有点热|太闷|闷死")),
+    ("ac_status",   "aircon", re.compile(r"空调(?:现在)?(?:是)?(?:多少度|几度|什么状态|开着吗)")),
+    ("ac_on",       "aircon", re.compile(r"(?:打开|开启|开)(?:一下)?空调|制冷|制热|除湿|来点冷风")),
 
     # ---------------- 3. 灯专有 ----------------
     ("max",         "light", re.compile(r"最亮|全亮|开到最大|亮度最大")),
@@ -213,6 +252,9 @@ _RULES: list[tuple[str, Domain, re.Pattern[str]]] = [
     ("amb_off",    "none", re.compile(r"^(?:关(?:掉|闭|上|了)?|停|停下)$")),
     ("amb_on",     "none", re.compile(r"^(?:打开|开(?:一下)?|开始)$")),
     ("amb_next",   "none", re.compile(r"^(?:下一个|下个|换一个|换个)$")),
+    # 裸的「高一点 / 低一点」：对音量和温度都成立，靠上一次操作的设备定向
+    ("amb_higher", "none", re.compile(r"^(?:再)?(?:调)?[高大](?:一)?点$")),
+    ("amb_lower",  "none", re.compile(r"^(?:再)?(?:调)?[低小](?:一)?点$")),
     ("amb_prev",   "none", re.compile(r"^(?:上一个|上个)$")),
     ("toggle",     "light", re.compile(r"切换|反过来")),
 ]
@@ -246,6 +288,24 @@ def _b_preset_recall(m, raw, rule):
         return None
     return Intent("tivoli", "preset_recall", slots={"preset": n},
                   reply=f"切到{station_name(n)}", raw=raw, rule=rule)
+
+
+def _b_temp(m, raw, rule):
+    """从匹配里取温度。17~30 之外的一律不接 —— 遥控器本来就只能到这个范围，
+    接了也发不出去，不如当没听懂。"""
+    g = next((x for x in m.groups() if x), None)
+    t = _cn_number(g)
+    if t is None or not (17 <= t <= 30):
+        return None
+    return Intent("aircon", "set_temp", slots={"temp": t},
+                  reply=f"空调调到{t}度", raw=raw, rule=rule)
+
+
+def _b_ac_on(m, raw, rule):
+    txt = m.group(0)
+    mode = ("heat" if "制热" in txt else
+            "dry" if "除湿" in txt else "cool")
+    return Intent("aircon", "on", slots={"mode": mode}, raw=raw, rule=rule)
 
 
 def _b_pct(m, raw, rule):
@@ -342,7 +402,18 @@ _BUILD: dict[str, Callable[[re.Match[str], str, str], Intent | None]] = {
     "music_resume":     _simple("music", "resume", "继续"),
     "music_stop":       _simple("music", "stop", "停了"),
     "music_now":        _simple("music", "now_playing", ""),
+    "mode_shuffle":     _simple("music", "set_mode", "", mode="shuffle"),
+    "mode_sequential":  _simple("music", "set_mode", "", mode="sequential"),
+    "mode_repeat_one":  _simple("music", "set_mode", "", mode="repeat_one"),
+    "mode_repeat_all":  _simple("music", "set_mode", "", mode="repeat_all"),
     "music_play":       _b_music_play,
+    # aircon
+    "ac_off":       _simple("aircon", "off", "空调关了"),
+    "ac_on":        _b_ac_on,
+    "ac_set_temp":  _b_temp,
+    "ac_warmer":    _simple("aircon", "temp_step", "", step=1),
+    "ac_cooler":    _simple("aircon", "temp_step", "", step=-1),
+    "ac_status":    _simple("aircon", "status", ""),
     # light
     "max":      _light("brightness", "已调到最亮", brightness_pct=100),
     "min":      _light("brightness", "已调到最暗", brightness_pct=1),
@@ -367,11 +438,13 @@ _AMBIGUOUS: dict[str, dict[Domain, Intent]] = {
         "light":  Intent("light", "off", reply="灯关了"),
         "tivoli": Intent("tivoli", "power_off", reply="音响关了"),
         "music":  Intent("music", "stop", reply="停了"),
+        "aircon": Intent("aircon", "off", reply="空调关了"),
     },
     "amb_on": {
         "light":  Intent("light", "on", reply="灯开了"),
         "tivoli": Intent("tivoli", "radio_on", reply="收音机开了"),
         "music":  Intent("music", "resume", reply="继续"),
+        "aircon": Intent("aircon", "on", slots={"mode": "cool"}, reply="空调开了"),
     },
     "amb_next": {
         "tivoli": Intent("tivoli", "station_step", slots={"step": 1}, reply="换个台"),
@@ -380,6 +453,18 @@ _AMBIGUOUS: dict[str, dict[Domain, Intent]] = {
     "amb_prev": {
         "tivoli": Intent("tivoli", "station_step", slots={"step": -1}, reply="退回上一个台"),
         "music":  Intent("music", "prev", reply="上一首"),
+    },
+    "amb_higher": {
+        "tivoli": Intent("tivoli", "volume_step", slots={"step": 3}, reply="调大了"),
+        "music":  Intent("tivoli", "volume_step", slots={"step": 3}, reply="调大了"),
+        "aircon": Intent("aircon", "temp_step", slots={"step": 1}),
+        "light":  Intent("light", "brightness_step", brightness_step_pct=20, reply="调亮了"),
+    },
+    "amb_lower": {
+        "tivoli": Intent("tivoli", "volume_step", slots={"step": -3}, reply="调小了"),
+        "music":  Intent("tivoli", "volume_step", slots={"step": -3}, reply="调小了"),
+        "aircon": Intent("aircon", "temp_step", slots={"step": -1}),
+        "light":  Intent("light", "brightness_step", brightness_step_pct=-20, reply="调暗了"),
     },
 }
 
@@ -407,15 +492,24 @@ _PINYIN_RULES: list[tuple[str, Domain, re.Pattern[str]]] = [
     ("tivoli_off",       "tivoli", re.compile(r"guan(?:diao|bi|shang|le)?(?:yinxiang|shouyinji|guangbo|diantai)")),
     ("tivoli_on",        "tivoli", re.compile(r"(?:dakai|kaiqi)yinxiang")),
     ("radio_on",         "tivoli", re.compile(r"shouyinji|guangbo|diantai|tiaopin")),
-    ("volume_up",        "tivoli", re.compile(r"(?:shengyin|yinliang)(?:tiao)?da|dadianshen|dashengyi?dian|taixiaosheng")),
-    ("volume_down",      "tivoli", re.compile(r"(?:shengyin|yinliang)(?:tiao)?xiao|xiaodianshen|xiaoshengyi?dian|taichao")),
+    ("volume_up",        "tivoli", re.compile(r"(?:shengyin|yinliang)(?:tiao)?(?:da|gao)|dadianshen|dashengyi?dian|taixiaosheng")),
+    ("volume_down",      "tivoli", re.compile(r"(?:shengyin|yinliang)(?:tiao)?(?:xiao|di)|xiaodianshen|xiaoshengyi?dian|taichao")),
     ("mute",             "tivoli", re.compile(r"jingyin|xiaoyin|biechusheng")),
-    ("music_favorites",  "music",  re.compile(r"wo(?:de)?shoucang|woxihuande(?:yinyue|ge)?|woshoucangde(?:ge|yinyue)?|hongxingequ")),
+    ("ac_off",      "aircon", re.compile(r"guan(?:diao|bi|shang|le)?(?:yixia)?kongtiao|kongtiaoguan")),
+    ("ac_warmer",   "aircon", re.compile(r"(?:kongtiao|wendu|dushu).{0,6}?(?:gao|re|nuan)yi?dian|taileng|lengsile|youdianleng|dongsi")),
+    ("ac_cooler",   "aircon", re.compile(r"(?:kongtiao|wendu|dushu).{0,6}?(?:di|leng|liang)yi?dian|taire|resile|youdianre|taimen|mensi")),
+    ("ac_status",   "aircon", re.compile(r"kongtiao(?:xianzai)?(?:shi)?(?:duoshaodu|jidu|shenmezhuangtai|kaizhema)")),
+    ("ac_on",       "aircon", re.compile(r"(?:dakai|kaiqi|kai)(?:yixia)?kongtiao|zhileng|zhire|chushi")),
+    ("music_favorites",  "music",  re.compile(r"wo(?:de)?shoucang|wo(?:xihuan|xiai|aiting)de(?:yinyue|ge|gequ)?|woshoucangde(?:ge|yinyue)?|hongxingequ|wodegedan")),
     ("music_next",       "music",  re.compile(r"xiayishou|xiashou|huanyishou|qiege")),
     ("music_prev",       "music",  re.compile(r"shangyishou|shangshou|qianyishou")),
     ("music_pause",      "music",  re.compile(r"zanting|tingyixia|xianting")),
     ("music_resume",     "music",  re.compile(r"jixu(?:bofang|fang)?|jiezhefang|jiezheting")),
     ("music_stop",       "music",  re.compile(r"tingzhibofang|biefangle|butingle|guandiaoyinyue")),
+    ("mode_sequential",  "music",  re.compile(r"shunxubofang|shunxu(?:moshi)?|anshunxu|[bu][iu]e?yao?suiji|biesuiji")),
+    ("mode_shuffle",     "music",  re.compile(r"suijibofang|suiji(?:moshi)?|daluan|suibianfang")),
+    ("mode_repeat_one",  "music",  re.compile(r"danquxunhuan|xunhuanzhe(?:yi)?shou|yizhifangzhe(?:yi)?shou|chongfuzheshou")),
+    ("mode_repeat_all",  "music",  re.compile(r"liebiaoxunhuan|xunhuanbofang|quanbuxunhuan|yizhifangxiaqu")),
     ("music_now",        "music",  re.compile(r"shenmege|zhengzaifangde?shishenme|zheshishenmege")),
     ("max",      "light", re.compile(r"zuiliang|quanliang|liangdu?zuida")),
     ("min",      "light", re.compile(r"zuian|weiguang")),
@@ -560,6 +654,10 @@ _MULTINET_CANDIDATES: list[tuple[str, str | None]] = [
     ("继续播放", None),
     ("声音大一点", None),
     ("声音小一点", None),
+    ("打开空调", None),
+    ("关掉空调", None),
+    ("温度高一点", None),
+    ("温度低一点", None),
 ]
 
 
