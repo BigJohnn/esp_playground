@@ -440,6 +440,7 @@ esp_err_t net_fetch_commands(net_command_cb_t cb, void *ctx,
 }
 
 esp_err_t net_send_command(const char *text, char *reply, size_t reply_len, bool *out_ok,
+                           bool *out_followup,
                            net_timing_t *timing)
 {
     char req[192];
@@ -469,6 +470,9 @@ esp_err_t net_send_command(const char *text, char *reply, size_t reply_len, bool
     read_server_ms(root, timing);
     if (out_ok) {
         *out_ok = cJSON_IsTrue(cJSON_GetObjectItem(root, "ok"));
+    }
+    if (out_followup) {
+        *out_followup = cJSON_IsTrue(cJSON_GetObjectItem(root, "followup"));
     }
     cJSON *r = cJSON_GetObjectItem(root, "reply");
     if (reply && reply_len && cJSON_IsString(r)) {
@@ -597,6 +601,38 @@ esp_err_t net_send_utterance(const void *pcm, size_t bytes,
     }
     cJSON_Delete(root);
     return ESP_OK;
+}
+
+/* ---------------- 唤醒通知 ---------------- */
+
+static void wake_task(void *arg)
+{
+    char url[128];
+    snprintf(url, sizeof(url), "%s/wake", s_server_url);
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 1500,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (c) {
+        set_auth(c);
+        esp_http_client_set_header(c, "Content-Type", "application/json");
+        esp_http_client_set_post_field(c, "{}", 2);
+        esp_http_client_perform(c);      /* 结果不关心：压音量失败不该影响识别 */
+        esp_http_client_cleanup(c);
+    }
+    vTaskDelete(NULL);
+}
+
+void net_notify_wake(void)
+{
+    if (!s_server_url[0]) {
+        return;
+    }
+    /* 单开一个任务而不是在回调里直接发：SR_EVENT_WAKE 是在 detect_task 里
+     * 发出来的，那个任务每 32ms 就要喂一帧音频给 AFE，绝不能在里面做网络 IO。 */
+    xTaskCreate(wake_task, "wake_notify", 4096, NULL, 4, NULL);
 }
 
 esp_err_t net_fetch_tts(const char *text, net_pcm_sink_t sink, void *ctx)

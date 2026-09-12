@@ -190,6 +190,11 @@ static void on_sr_event(const sr_result_t *res, void *ctx)
     switch (res->event) {
     case SR_EVENT_WAKE:
         led_set(0, 24, 24);          /* 青：在听 */
+        /* 立刻告诉服务端把音乐压低。放在这儿而不是等命令说完 ——
+         * 唤醒词和命令词之间有 0.5~1 秒，正好够音量降下去，
+         * 让**第一句命令**就落在安静背景上。
+         * 实测不这么做的后果：放着歌说话，服务端收到的是「🎼我唱唱给的算」。 */
+        net_notify_wake();
         break;
     case SR_EVENT_TIMEOUT:
         led_set(0, 24, 0);           /* 绿：回到待唤醒 */
@@ -231,6 +236,31 @@ static void recover_if_unreachable(esp_err_t err)
 
 /* 快路径：板上认出来的命令词，直接把中文交给服务端。
  * 不念回话 —— 灯自己亮/灭就是最快也最确定的反馈，再加一句 TTS 只会更慢更吵。 */
+/* 连续对话：一条命令成功之后不用再说唤醒词。
+ * 上限存在的理由很实际 —— 没有上限的话，一次误识别就可能让麦克风一直开着。
+ * 5 轮足够覆盖"放歌 -> 下一首 -> 声音小点 -> 再下一首"这种真实串联。 */
+#define FOLLOWUP_MS      3500
+#define FOLLOWUP_MAX     5
+static int s_followup_left;
+
+static void arm_followup(bool wanted)
+{
+    if (!wanted) {
+        s_followup_left = 0;
+        return;
+    }
+    if (s_followup_left <= 0) {
+        s_followup_left = FOLLOWUP_MAX;   /* 新的一串对话 */
+    }
+    if (--s_followup_left <= 0) {
+        ESP_LOGI(TAG, "连续对话到上限了，下一句要重新唤醒");
+        return;
+    }
+    ESP_LOGI(TAG, "继续听（还剩 %d 轮）", s_followup_left);
+    led_set(0, 0, 24);                    /* 蓝：不用唤醒词，直接说 */
+    sr_listen_again(FOLLOWUP_MS);
+}
+
 static void do_command(const action_t *act)
 {
     led_set(24, 24, 24);             /* 白：执行中 */
@@ -238,9 +268,11 @@ static void do_command(const action_t *act)
     bool ok = false;
     net_timing_t t = { 0 };
     int64_t t0 = esp_timer_get_time();
-    esp_err_t err = net_send_command(act->text, reply, sizeof(reply), &ok, &t);
+    bool followup = false;
+    esp_err_t err = net_send_command(act->text, reply, sizeof(reply), &ok, &followup, &t);
     int ms = (int)((esp_timer_get_time() - t0) / 1000);
     if (err == ESP_OK) {
+        arm_followup(followup);
         /* 拆成"服务端里"和"网络上"两段。快路径本来就只有几百毫秒，
          * 再快就得知道那几百毫秒到底是谁的 —— 灯泡自己（exec）还是 Wi-Fi。 */
         ESP_LOGI(TAG, "「%s」-> %s (%s, %d ms = 服务端 %d[控灯 %d] + 网络 %d)",

@@ -48,7 +48,12 @@ esp_err_t net_fetch_commands_version(char *out_version, size_t version_len);
 
 /* POST /command，把识别到的中文句子交给服务端去解析意图并控灯。
  * reply 里回填服务端的回话文本（可传 NULL）。 */
+/* 唤醒词一响就打这条，让服务端把音乐压低。发完不等结果 ——
+ * 此刻板子正要开始收命令词，这条请求绝不能挡在那条路上。 */
+void net_notify_wake(void);
+
 esp_err_t net_send_command(const char *text, char *reply, size_t reply_len, bool *out_ok,
+                           bool *out_followup,
                            net_timing_t *timing);
 
 /* ---- 兜底路径（M4）---- */

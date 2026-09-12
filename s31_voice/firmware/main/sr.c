@@ -64,6 +64,10 @@ static void *s_ctx;
 static int16_t *s_rec;
 static volatile bool s_rec_busy;      /* 上一段还在被消费者用着，别覆盖它 */
 static volatile bool s_muted;         /* 放 TTS 期间喂静音，见 sr_set_muted */
+/* 连续对话：主任务处理完一条命令后置上它，detect_task 下一帧就直接开窗，
+ * 不等唤醒词。用 volatile int 而不是加锁 —— 写的一边只写、读的一边读完就清零，
+ * 这个竞态最坏的结果是窗口晚开一帧（32ms），不值得为它引入一把锁。 */
+static volatile int s_relisten_ms;
 
 /* VAD 判静音之后再确认多久算一句话说完。
  * 只要 240ms 就够，因为 vadnet1_medium 自己已经有 992ms 的迟滞
@@ -331,6 +335,35 @@ static void detect_task(void *arg)
         }
 
         if (!listening) {
+            /* 连续对话：上一条命令执行成功之后，不要求唤醒词直接再开一次窗。
+             * 放在 wakenet 判断之前 —— 此刻 WakeNet 刚被重新打开，
+             * 而我们要的正是"跳过它"。 */
+            int again = s_relisten_ms;
+            if (again > 0) {
+                s_relisten_ms = 0;
+                listening = true;
+                listen_until = esp_timer_get_time() + (int64_t)again * 1000;
+                rec_len = 0;
+                /* armed=true：这一轮前面没有唤醒词，也就没有尾音要等过去。
+                 * 首轮那套"先等 VAD 落到 SILENCE"的逻辑在这儿反而会多等近一秒。 */
+                armed = true;
+                spoke = false;
+                speech_start = 0;
+                silence_frames = 0;
+                last_vad = VAD_SILENCE;
+                /* 追问窗口**也录**兜底音频。最初的设计是不录 —— 理由是全量 ASR
+                 * 在有噪音时基本废掉。但那条理由已经不成立了：唤醒和每一轮追问
+                 * 现在都会让服务端把音乐压下去（见 net_notify_wake），背景是安静的。
+                 *
+                 * 而不录的代价很实在：板上词表只有那几条，用户在追问窗口里说
+                 * 「打开收音机」「下一首」这类不在表里的话，会被**静默丢弃** ——
+                 * 没有回话、没有灯、什么都没有，看起来就是坏了。 */
+                recording = (s_rec != NULL) && !s_rec_busy;
+                s_afe->disable_wakenet(s_afe_data);
+                s_mn->clean(s_mn_data);
+                emit(SR_EVENT_WAKE, -1, NULL, 0.0f, NULL, 0);
+                continue;
+            }
             /* 换词表只在这儿做：此刻没在识别命令词，MultiNet 的状态机是干净的。
              * 在唤醒之后换会把正在进行的一次识别打断，而且 esp_mn_commands_update()
              * 要重建词图，那期间的 detect() 结果不可信。 */
@@ -452,6 +485,11 @@ void sr_release_utterance(void)
 void sr_set_muted(bool muted)
 {
     s_muted = muted;
+}
+
+void sr_listen_again(int ms)
+{
+    s_relisten_ms = ms > 0 ? ms : 0;
 }
 
 esp_err_t sr_start(esp_codec_dev_handle_t codec, sr_event_cb_t cb, void *ctx)
