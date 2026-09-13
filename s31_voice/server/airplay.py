@@ -31,6 +31,7 @@ import asyncio
 import logging
 import os
 import shutil
+import tempfile
 import time
 
 _LOG = logging.getLogger("airplay")
@@ -73,6 +74,9 @@ class AirPlay:
         self._play: asyncio.subprocess.Process | None = None
         self._duck_task: asyncio.Task | None = None
         self._duck_from: float | None = None
+        # 压制前的音量**落盘**。见 duck() 里那段说明：它守护的是一个
+        # 活得比进程久的副作用（系统音量），只存在内存里是不够的。
+        self._duck_file = os.path.join(tempfile.gettempdir(), "s31_duck_from")
 
     # ---------- 探活 ----------
 
@@ -245,10 +249,63 @@ class AirPlay:
         if self._duck_task is not None and not self._duck_task.done():
             self._duck_task.cancel()
         else:
-            self._duck_from = cur          # 只有不在压制中时才记原始值
+            # 只有不在压制中时才记原始值。但"当前音量"这个来源本身会骗人 ——
+            # 它已经被压过的话，我们就会把压低后的值当成原始值记下来，
+            # 而且从此再也回不去了（实测：一晚上之后系统音量永久停在 12，
+            # 音乐、回话、什么都几乎听不见，看起来像喇叭坏了）。
+            #
+            # 怎么会已经被压过：**压制的恢复状态只活在进程内存里，而它守护的
+            # 副作用（macOS 的系统音量）活得比进程久**。服务端在压制窗口里
+            # 被重启/崩掉一次，音量就永远留在 12 了。今晚重启了七八次，
+            # 每次都踩一遍。
+            #
+            # 两道防线：落盘的原始值优先（跨重启还认得回来），
+            # 再不行就用一个下限兜底，绝不把"压制档位"本身当成原始值。
+            self._duck_from = self._recall_duck_from() or max(cur, level + 1)
+            if self._duck_from != cur:
+                _LOG.info("当前音量 %.0f 看着像是上次没恢复的压制值，按 %.0f 记原始音量",
+                          cur, self._duck_from)
+        self._remember_duck_from(self._duck_from)
         if cur > level:
             await self.set_volume(level)
         self._duck_task = asyncio.create_task(self._unduck_after(seconds))
+
+    def _remember_duck_from(self, value: float | None) -> None:
+        try:
+            if value is None:
+                os.path.exists(self._duck_file) and os.unlink(self._duck_file)
+            else:
+                with open(self._duck_file, "w") as f:
+                    f.write(str(value))
+        except OSError:
+            pass        # 记不住就退回纯内存的老行为，不该因此让压音量整个失败
+
+    def _recall_duck_from(self) -> float | None:
+        """上一条命（可能是上一次进程）留下的原始音量。"""
+        try:
+            with open(self._duck_file) as f:
+                v = float(f.read().strip())
+            return v if 0 < v <= 100 else None
+        except (OSError, ValueError):
+            return None
+
+    async def restore_volume_if_stuck(self, level: float) -> None:
+        """启动时叫一次：上次是不是死在压制窗口里了。
+
+        判据是"当前音量 <= 压制档位，而且盘上还留着一个更高的原始值" ——
+        那就只能是上次没恢复成。用户自己把音量调到 12 以下也会命中，
+        但那种情况恢复到他自己设过的原始值，也不算冤枉。
+        """
+        if not await self.linked():
+            return
+        cur = await self.volume()
+        saved = self._recall_duck_from()
+        if cur is None or saved is None or cur > level or saved <= cur:
+            return
+        _LOG.warning("上次是在压音量期间退出的，系统音量还停在 %.0f，恢复到 %.0f",
+                     cur, saved)
+        await self.set_volume(saved)
+        self._remember_duck_from(None)
 
     async def _unduck_after(self, seconds: float) -> None:
         try:
@@ -258,6 +315,7 @@ class AirPlay:
         if self._duck_from is not None:
             await self.set_volume(self._duck_from)
             self._duck_from = None
+            self._remember_duck_from(None)
 
     async def set_volume(self, pct: float) -> bool:
         pct = max(0.0, min(100.0, float(pct)))

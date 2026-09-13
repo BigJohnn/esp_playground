@@ -60,6 +60,11 @@ logging.basicConfig(
 )
 _LOG = logging.getLogger("app")
 
+# 唤醒时把系统音量压到多少、压多久。定义放在最前面：lifespan 启动时
+# 就要用它做"上次是不是没恢复"的检查。
+_DUCK_LEVEL = float(os.environ.get("DUCK_VOLUME", "12"))
+_DUCK_SECONDS = float(os.environ.get("DUCK_SECONDS", "8"))
+
 _ha: HomeAssistant
 _exec: LightExecutor
 _router: Router
@@ -94,6 +99,10 @@ async def lifespan(app: FastAPI):
         _LOG.warning("网易云没登录，「播放我的收藏」用不了。跑 tools/netease_login.py")
     if not _tivoli.conf.get("measured"):
         _LOG.warning("tivoli.json 的常数还没实测（measured=false），FM 那条链会拒绝动作")
+
+    # 上次要是死在压音量的窗口里，系统音量还停在 12 —— 它是个活得比进程久的
+    # 副作用，没人恢复就会一直那样。开机先看一眼。
+    asyncio.create_task(_air.restore_volume_if_stuck(_DUCK_LEVEL))
 
     _disc_thread, _disc_stop = discovery.start(CONFIG.port)
     # miIO 握手保活。不这么做的话，每条隔了一分钟以上的命令都要先重握，
@@ -245,10 +254,6 @@ async def tivoli_hold_frames(value: int):
 # 让**第一句命令**就落在安静背景上。
 #
 # 这件事只有我们做得到：音乐是我们自己推的，音量归我们管。
-_DUCK_LEVEL = float(os.environ.get("DUCK_VOLUME", "12"))
-_DUCK_SECONDS = float(os.environ.get("DUCK_SECONDS", "8"))
-
-
 @app.post("/wake")
 async def wake():
     """板子听到唤醒词时打这个，越快越好。
@@ -409,6 +414,20 @@ async def utterance_endpoint(request: Request):
         _LOG.info("原始音频存到 %s", path)
     text = await asyncio.to_thread(STT.transcribe_array, audio, rate)
     t.mark("stt")
+    # STT 自己说这段不可信的话，就到此为止。**它是这条链上唯一听过原始音频的人**，
+    # 它说"这是音乐不是说话"时，后面的意图层、拼音层、LLM 全是在一段它已经
+    # 声明过不可靠的文字上做文章 —— 实测那一轮白花了 2.6 秒（LLM 硬超时）
+    # 才回一句"这个我还不会"，而第一个字符就已经告诉我们答案了。
+    why = STT.unreliable(text)
+    if why is not None:
+        _LOG.info("兜底 %.2fs 音频 -> %r，不可信（%s），不往下走", secs, text, why)
+        parsed = intent_mod.Intent(domain="none", action="none", raw=text,
+                                   rule="stt_unreliable", reply="没听清")
+        ok, reply = False, "没听清"
+        t.mark("exec")
+        return JSONResponse({"text": text, "domain": "none", "action": "none",
+                             "rule": parsed.rule, "slots": {}, "ok": ok, "reply": reply,
+                             "ms": t.done(), **_followup_fields(parsed, ok)})
     parsed = intent_mod.parse(text, _router.ctx.rank(_router._DOMAINS))
     deferred = await _maybe_defer(parsed)
     if deferred is not None:
