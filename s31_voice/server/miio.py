@@ -89,6 +89,9 @@ class MiioDevice:
             raise ValueError("token 必须是 32 位十六进制")
         self.ip = ip
         self.timeout = timeout
+        # 广播发现最多找多久。1.5s 够了：函数内部每 0.6s 重发一轮，
+        # 在网上的设备第一轮就回；找满 3 秒只是在等一个不存在的设备。
+        self.discover_s = 1.5
         self.broadcast_nets = broadcast_nets or local_broadcasts()
 
         self._key = hashlib.md5(self.token).digest()
@@ -123,7 +126,7 @@ class MiioDevice:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.settimeout(0.4)
         try:
-            deadline = time.time() + 3.0
+            deadline = time.time() + self.discover_s
             next_send = 0.0
             while time.time() < deadline:
                 # 每 0.6s 重发一轮：UDP 广播丢一两个包很正常，实测确实会偶发丢失
@@ -203,8 +206,18 @@ class MiioDevice:
 
     # ---------- 调用 ----------
 
+    # 本地这条路总共能花多久。**超了就整体放弃**，别让重试把预算叠上去。
+    #
+    # 这个数存在的理由是一次实测：灯泡被拔了电，于是每条控灯命令都
+    # 3 次尝试 × 每次 3 秒发现 ≈ 9.5 秒，最后才退回 Home Assistant。
+    # 灯确实亮了，但用户早就以为它坏了 —— **一条要等 10 秒的兜底路径，
+    # 不算兜底**。重试本来是给 UDP 丢包用的（发现函数内部已经自己重发了），
+    # 而"设备根本不在网上"重试三遍不会有不同结果，只会把等待翻三倍。
+    LOCAL_BUDGET_S = 2.5
+
     def send(self, method: str, params, retries: int = 2):
         last: Exception | None = None
+        deadline = time.time() + self.LOCAL_BUDGET_S
         for attempt in range(retries + 1):
             try:
                 return self._send_once(method, params)
@@ -214,6 +227,8 @@ class MiioDevice:
                 self._hs = None      # 强制重新握手
                 if attempt == 0:
                     self.ip = None   # 第二次起顺便重新发现 IP
+                if time.time() >= deadline:
+                    break
         raise MiioError(f"{method} 失败: {last}")
 
     def _send_once(self, method: str, params):

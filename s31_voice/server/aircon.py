@@ -47,6 +47,9 @@ class AirconExecutor:
         # 不是给控制用 —— 控制走的是绝对状态帧，从来不需要知道当前状态。
         # None = 不知道（刚启动、或只被实体遥控器动过）。
         self.believed_on: bool | None = None
+        # 上一次**开关机**的时刻。温度调节不算 —— 伤机器的是压缩机短周期启停，
+        # 不是改目标温度。
+        self._last_power_at: float = 0.0
 
     async def _state(self) -> dict:
         """读回当前状态。**这一步在 Tivoli 上是做不到的**，在这儿可以。"""
@@ -76,24 +79,59 @@ class AirconExecutor:
             return False
         return True
 
+    # 两次开关机之间至少隔这么久。
+    #
+    # 这不是软件洁癖，是硬件约束：压缩机短周期启停（short cycling）会真的把它做坏 ——
+    # 刚停机时冷媒两侧压力还没平衡，这时候重启，压缩机是在带着压差硬启动。
+    # 整机厂通常在机内做 3 分钟延时保护，但我们是**绕过面板直接打红外**的，
+    # 不能假定那层保护一定挡得住我们发的每一帧。
+    #
+    # 加这条是因为一次自己造成的事故：三台设备的体检脚本里连着跑了两轮
+    # 「打开空调 … 关闭空调」，几十秒内开关了四次。用户当场喊停。
+    # 光记住"以后别这么干"是不够的 —— 约束要写进代码，否则下一个脚本还会犯。
+    #
+    # 只挡**反向**的那次：连说两次「关空调」是无害的（Coolix 发的是绝对状态帧，
+    # 已经关着再关一次还是关着），挡它只会让人觉得系统在闹脾气。
+    _POWER_GUARD_S = 180.0
+
+    def _power_guard(self, want_on: bool) -> str | None:
+        """这次开关机该不该拦下来。返回拦下来的说辞，放行就返回 None。"""
+        if self.believed_on is None or self.believed_on == want_on:
+            return None            # 不知道，或者本来就是这个状态 —— 不是一次翻转
+        left = self._POWER_GUARD_S - (time.time() - self._last_power_at)
+        if left <= 0:
+            return None
+        return (f"空调{int(left)}秒前刚{'关' if want_on else '开'}过，"
+                f"这么快反过来会伤压缩机，等{int(left)}秒再说")
+
     async def execute(self, intent: Intent) -> tuple[bool, str]:
         a = intent.action
         slots = intent.slots
 
         if a == "off":
+            blocked = self._power_guard(False)
+            if blocked:
+                return False, blocked
             # 注意这不是"按一下电源键"，是把状态设成 off。
             # 已经关着的时候再说一次"关空调"，结果还是关着 —— 不会反过来打开。
             # 这正是状态帧相对 toggle 的好处，也是用户特意提过的那个顾虑。
             if not await self._call("set_hvac_mode", hvac_mode="off"):
                 return False, "空调没反应，检查一下红外板"
             self._last_set = None      # 关机之后温度记账作废
+            if self.believed_on is not False:
+                self._last_power_at = time.time()
             self.believed_on = False
             return True, "空调关了"
 
         if a == "on":
+            blocked = self._power_guard(True)
+            if blocked:
+                return False, blocked
             mode = slots.get("mode") or "cool"
             if not await self._call("set_hvac_mode", hvac_mode=mode):
                 return False, "空调没反应，检查一下红外板"
+            if self.believed_on is not True:
+                self._last_power_at = time.time()
             self.believed_on = True
             temp = slots.get("temp")
             if temp is not None:
@@ -110,7 +148,13 @@ class AirconExecutor:
             st = await self._state()
             # 关着的时候直接设温度，机器收不到 —— 先开起来。
             if (st.get("state") or "off") == "off":
+                # 这里也是一次开机，同样要过压缩机保护那道闸
+                blocked = self._power_guard(True)
+                if blocked:
+                    return False, blocked
                 await self._call("set_hvac_mode", hvac_mode="cool")
+                self._last_power_at = time.time()
+                self.believed_on = True
             if not await self._call("set_temperature", temperature=temp):
                 return False, "空调没反应"
             self._last_set = (temp, time.time())
