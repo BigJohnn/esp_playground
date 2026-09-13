@@ -141,6 +141,9 @@ for i in $ORDER; do
     open_sound > /dev/null
 done
 
-echo "$((N-1)) 个输出设备都试过了，没有一个变成 $TARGET。" >&2
+# ${TARGET} 要带花括号：后面紧跟的是中文句号，bash 会把它当成变量名的一部分，
+# 于是 set -u 报 "TARGET。: unbound variable"。这条只在**全部失败**那条路上跑，
+# 所以一直没被发现 —— 成功时早就 exit 0 了。错误处理路径同样需要被执行过。
+echo "$((N-1)) 个输出设备都试过了，没有一个变成 ${TARGET}。" >&2
 echo "Tivoli 可能没开机、或者不在同一网段。" >&2
 exit 1
