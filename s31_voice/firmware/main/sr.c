@@ -78,10 +78,33 @@ static bool s_in_followup;
 #define FOLLOWUP_MIN_MS  900
 
 /* VAD 判静音之后再确认多久算一句话说完。
- * 只要 240ms 就够，因为 vadnet1_medium 自己已经有 992ms 的迟滞
- * （日志里的 min noise:992 ms）—— 它说"静音"的时候，实际上已经安静一秒了。
- * 再叠一个长窗口纯粹是往兜底路径上白加延迟。 */
-#define SILENCE_MS_TO_END  400
+ *
+ * 400ms 对**已经说了一句话**的情况是对的，理由见下面那段原注释。但它对
+ * "才说了两三个字就停住"是错的 —— 实测踩到：用户说「空调调低一点」，
+ * 板子只送上来 1.80s，服务端听成「🎼空调。」，回了一句"这个我还不会"。
+ * 算一下就明白了：
+ *
+ *     1.80s = 500ms 前摇 + 语音 + 400ms 尾部静音  ->  语音只有 0.90s
+ *     「空调」单独念是 0.97s
+ *
+ * 也就是句子在「空调」之后被切断了。而「空调 / 调低一点」是典型的
+ * 主题—述题结构，中间那一下停顿再自然不过，人组织语言的时候尤其如此。
+ *
+ * 所以按**已经说了多长**分两档：说得少的时候多等一会儿。理由是代价不对称 ——
+ * 切早了整句话连同意图一起丢掉，多等 500ms 只是延迟。
+ *
+ * 这么改在快路径上是**零成本**的：板上命令词由 ESP_MN_STATE_DETECTED 直接短路
+ * 返回，压根走不到 VAD 端点这一段。会走到这儿的只有 ASR 兜底路径，
+ * 而它本来就要花 STT 1.2s + 网络，多等这半秒可以忽略 —— 更何况兜底路径
+ * 正是长句、复杂句、带停顿的句子的所在地。
+ *
+ * 这也解释了为什么声学回归（tools/mn_regress.sh）一直没发现它：
+ * 那个测试只念板上那 12 条词，而它们全都从上面那条短路走掉了。 */
+#define SILENCE_MS_TO_END        400   /* 已经说了一句话了 */
+#define SILENCE_MS_TO_END_SHORT  900   /* 才说了很短一截，多等等看有没有下文 */
+/* 低于这个长度算"还没说完一句"。这套系统里的完整命令都 >=3 个音节，
+ * 最短的「亮一点」念出来也有 1.0s 上下。 */
+#define SHORT_SPEECH_MS          1200
 
 /* 掐头的时候往前多留这么多。实测 vadnet 报"开口"比真正的第一个音晚 ~300ms，
  * 留 300 正好卡在边界上（服务端存下来的音频头部余量是 0.00s）。
@@ -320,6 +343,7 @@ static void detect_task(void *arg)
     /* 一帧 32ms。用实际帧长换算，别把 32 写死在代码里。 */
     const int frame_ms = afe_chunk * 1000 / 16000;
     const int silence_frames_to_end = frame_ms > 0 ? SILENCE_MS_TO_END / frame_ms : 19;
+    const int silence_frames_short = frame_ms > 0 ? SILENCE_MS_TO_END_SHORT / frame_ms : 43;
 
     bool listening = false;
     int64_t listen_until = 0;
@@ -441,7 +465,24 @@ static void detect_task(void *arg)
         }
 
         esp_mn_state_t st = s_mn->detect(s_mn_data, res->data);
-        bool spoke_and_stopped = spoke && silence_frames >= silence_frames_to_end;
+        /* 已经说了多长（不含尾部这段静音）。silence_frames 是从"最后一次判到
+         * 说话"之后攒起来的，所以要从 rec_len 里把它减掉才是真正的语音长度。 */
+        size_t speech_ms = 0;
+        if (spoke && rec_len > speech_start) {
+            size_t spoken = rec_len - speech_start;
+            size_t tail = (size_t)silence_frames * afe_chunk;
+            speech_ms = (spoken > tail ? spoken - tail : 0) / 16;   /* 采样 -> ms @16k */
+        }
+        /* 说得少就多等一会儿 —— 但**只在唤醒窗口里**。
+         *
+         * 追问窗口不这么干：那时候用户是在回答我们的问题，「好的」「第二个」
+         * 这种短而完整的话正是常态，让每一句回答都多等半秒，等于拿高频场景的
+         * 延迟去换低频场景的正确性。而且截断在服务端已经能优雅降级了 ——
+         * 只听到「空调」会反问"空调要怎么样？"，用户补半句就成（见 executor._ask_slot），
+         * 所以这里不必再为它下重手。 */
+        int need_silence = (!s_in_followup && speech_ms < SHORT_SPEECH_MS)
+                               ? silence_frames_short : silence_frames_to_end;
+        bool spoke_and_stopped = spoke && silence_frames >= need_silence;
         bool out_of_time = (st == ESP_MN_STATE_TIMEOUT) ||
                            (esp_timer_get_time() > listen_until);
 
@@ -473,12 +514,31 @@ static void detect_task(void *arg)
                  * 往前留 PREROLL_MS 余量：VAD 判"开口"晚于真正的第一个音。 */
                 const size_t preroll = 16000 / 1000 * PREROLL_MS;
                 size_t from = (spoke && speech_start > preroll) ? speech_start - preroll : 0;
-                ESP_LOGI(TAG, "不在命令词表里，录了 %.2fs（掐掉开头 %.2fs）交给服务端（%s）",
-                         (rec_len - from) / 16000.0f, from / 16000.0f,
+                /* 尾巴也掐掉。头部静音一直是掐的，尾部却一路送上去 ——
+                 * 实测「空调调低一点」录了 3.83s，而那句话本身只有 2.25s，
+                 * 多出来的一秒多全是静音，而 STT 是按音频长度收费的
+                 * （SenseVoice RTF≈0.5，一秒静音就是半秒白等）。
+                 *
+                 * 切在"VAD 第一次报静音"的位置，而不是更靠前：vadnet 有近 0.7s
+                 * 的迟滞，它说静音的时候真正的最后一个音早就过去了 ——
+                 * 这 0.7s 的余量原样留着，所以不会切掉尾字。
+                 * 只有 VAD 判定说完这条路要掐；等到超时那条路说明 VAD 从没报过
+                 * 静音，silence_frames 不可信，原样发。 */
+                size_t to = rec_len;
+                if (spoke_and_stopped) {
+                    size_t tail = (size_t)silence_frames * afe_chunk;
+                    if (rec_len > from + tail) {
+                        to = rec_len - tail;
+                    }
+                }
+                ESP_LOGI(TAG, "不在命令词表里，送 %.2fs（掐头 %.2fs 掐尾 %.2fs）"
+                              "交给服务端（%s）",
+                         (to - from) / 16000.0f, from / 16000.0f,
+                         (rec_len - to) / 16000.0f,
                          spoke_and_stopped ? "VAD 判定说完" : "等到超时");
                 /* 所有权交出去，消费者用完调 sr_release_utterance() 还回来。 */
                 s_rec_busy = true;
-                emit(SR_EVENT_UTTERANCE, -1, NULL, 0.0f, s_rec + from, rec_len - from);
+                emit(SR_EVENT_UTTERANCE, -1, NULL, 0.0f, s_rec + from, to - from);
             } else {
                 ESP_LOGW(TAG, "说了话但没录上（上一段还在处理），只能放掉");
                 emit(SR_EVENT_TIMEOUT, -1, NULL, 0.0f, NULL, 0);
