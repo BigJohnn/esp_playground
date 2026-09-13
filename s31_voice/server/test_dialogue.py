@@ -232,6 +232,120 @@ def test_选项必须念得完():
     assert len(reply) < 60, f"问句太长（{len(reply)}字）：{reply}"
 
 
+# ---------------------------------------------------------------- 端点 / 识别可信度
+
+def test_STT说不可信时不要往下走():
+    """SenseVoice 的 🎼 是「这段是音乐不是说话」。
+
+    实测：板子送上来一段被截断的录音，服务端听成「🎼空调。」，
+    我们照单全收 —— 过意图层、过拼音层、再花 2.6 秒问 LLM，
+    最后回一句「这个我还不会」。模型第一个字符就告诉答案了。
+    """
+    from stt import STT
+    assert STT.unreliable("🎼空调。")
+    assert STT.unreliable("🎼")
+    # 音乐里夹着一句听清了的话，该照常执行 —— 标记说的是「有音乐」，
+    # 不是「这几个字错了」
+    assert STT.unreliable("🎼打开台灯。") is None
+    assert STT.unreliable("空调调低一点。") is None
+
+
+def test_情绪标记不算不可信():
+    """😊😔😡 说明这**是**语音（还带情绪），和 🎼 含义相反。
+
+    第一版按 Unicode 区段一刀切，把「😊好的」判成了不可信 ——
+    而「好的」正是回答问题时最常说的一句。
+    """
+    from stt import STT
+    for t in ("😊好的", "😔算了", "😮对"):
+        assert STT.unreliable(t) is None, t
+
+
+# ---------------------------------------------------------------- 语序
+
+def test_空调两种语序都要收():
+    """中文允许动宾和主谓两种语序，规则表只写一种就会漏。
+
+    `ac_off` 两个方向都有而 `ac_on` 只有一个 —— 说明这坑早被踩过一次，
+    但当时只补了被踩到的那一条。同形状的邻居没一起补，是这份表最容易漏的地方。
+    """
+    for t in ("调低空调", "把空调调低", "空调调低一点"):
+        i = parse(t, Context())
+        assert (i.domain, i.action) == ("aircon", "temp_step"), (t, i)
+        assert i.slots.get("step") == -1, (t, i)
+    for t in ("空调开一下", "空调打开", "开空调"):
+        i = parse(t, Context())
+        assert (i.domain, i.action) == ("aircon", "on"), (t, i)
+
+
+def test_多音字调要认两个读音():
+    """STT 的同音错字会把整句的分词打乱，多音字跟着换读音。
+
+    「调低空调」被听成「调地空调」之后，"调地" 不在 pinyin_fix 的词典里，
+    「调」回落成默认的 diào，整条拼音规则当场失配。
+    更狠的是「掉高空调」-> diaogaokong**diao** —— 连词尾「空调」里那个「调」
+    都被句首的错字带偏了。多音字在这儿是**位置性**问题，不是词汇性问题。
+    """
+    for t in ("调地空调", "掉低空调", "掉高空调"):
+        i = parse(t, Context())
+        assert (i.domain, i.action) == ("aircon", "temp_step"), (t, i)
+    assert parse("掉亮一点", Context()).domain == "light"
+
+
+def test_音量词不能被空调抢走():
+    """实测报过的 bug：说「声音低一点」回「已调低到23度」。"""
+    c = _ctx(aircon_on=True)
+    c.record("空调调低一点", "aircon", "temp_step", True, "调低到25度")
+    for t in ("声音低一点", "调低音量", "太吵了"):
+        i = parse(t, c)
+        assert i.domain == "tivoli", (t, i)
+
+
+def test_灯也要收两种语序():
+    """全面体检时扫出来的：空调那条补过之后，灯这条同形状的还漏着。
+
+    补一处、不补它同形状的邻居，是这份规则表最稳定的漏法。
+    """
+    for t in ("把灯打开", "台灯打开", "灯打开", "打开台灯"):
+        assert parse(t, Context()).action == "on", t
+    for t in ("把台灯关掉", "灯关掉", "关闭台灯"):
+        assert parse(t, Context()).action == "off", t
+
+
+def test_温度可以不带度字_但不能抢走灯的百分比():
+    """「空调调到26」实测落到了 set_pct，把灯调成了 26%。
+
+    STT 很容易把句尾轻读的「度」吞掉，所以这个说法必须收；
+    但裸的「调到26」仍然该归灯 —— 区别就在有没有「空调」两个字。
+    """
+    for t in ("空调调到26", "空调调到26度", "空调26"):
+        i = parse(t, Context())
+        assert (i.domain, i.slots.get("temp")) == ("aircon", 26), (t, i)
+    assert parse("调到26", Context()).domain == "light"
+    assert parse("亮度调到60", Context()).domain == "light"
+
+
+def test_空调不许短周期启停():
+    """压缩机短周期启停会真的把它做坏 —— 刚停机时冷媒两侧压力还没平衡。
+
+    加这条是因为一次自己造成的事故：三台设备的体检脚本连着跑了两轮
+    「打开空调 … 关闭空调」，几十秒内开关四次，用户当场喊停。
+    光记住"以后别这么干"是不够的，约束要写进代码。
+    """
+    import time as _t
+    from aircon import AirconExecutor
+    a = AirconExecutor.__new__(AirconExecutor)
+    a.believed_on, a._last_power_at = None, 0.0
+    assert a._power_guard(True) is None, "不知道状态时不该拦"
+
+    a.believed_on, a._last_power_at = True, _t.time()
+    assert a._power_guard(False), "刚开机就要关，必须拦"
+    assert a._power_guard(True) is None, "同状态不是翻转，不该拦"
+
+    a._last_power_at = _t.time() - AirconExecutor._POWER_GUARD_S - 1
+    assert a._power_guard(False) is None, "过了保护期该放行"
+
+
 def test_问题会过期():
     import time as _t
     from context import Question
