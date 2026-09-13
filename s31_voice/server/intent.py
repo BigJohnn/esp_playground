@@ -234,19 +234,35 @@ _RULES: list[tuple[str, Domain, re.Pattern[str]]] = [
     # 排在灯前面，理由和 tivoli 一样：「打开空调」和「打开台灯」共享「打开」。
     # 而「空调」这两个字是它的护照，带上就不会跟别的设备抢。
     ("ac_off",      "aircon", re.compile(r"关(?:掉|闭|上|了)?(?:一下)?空调|空调关(?:掉|了|上)?|别吹了")),
+    # 「度」字可省：「空调调到26」和「空调调到26度」是同一句话，而且 STT 很容易
+    # 把句尾那个轻读的「度」吞掉。不带「度」时**必须有「空调」两个字**兜底 ——
+    # 否则裸的「调到26」会把灯的亮度百分比抢走（实测就是这么错的：
+    # 「空调调到26」落到了 set_pct，把灯调成了 26%）。
     ("ac_set_temp", "aircon", re.compile(r"空调.{0,4}?" + _TEMP + r"|" + _TEMP + r".{0,2}空调"
-                                         r"|(?:调|设|开)到\s*" + _TEMP)),
+                                         r"|(?:调|设|开)到\s*" + _TEMP
+                                         + r"|空调.{0,4}?(?:调|设|开)到\s*([0-9]{2})(?!\s*[%％分])"
+                                         r"|空调\s*([0-9]{2})(?!\s*[%％分度])")),
     # **必须带设备名**（空调/温度/度数），不能是裸的「高一点」「低一点」——
     # 那两个说法对音量同样成立，而音量是更高频的用法。
     # 只有「太热了」这类描述体感的说法才允许不带设备名：屋里热跟音响没关系。
+    # 中文这两个动作有**两种语序**，都得收：
+    #     主谓  空调调高一点 / 温度低一点
+    #     动宾  调高空调     / 把空调调低
+    # 原来只写了主谓那一支。`ac_off` 两个方向都有（`关…空调|空调关…`），
+    # 说明这个坑早就有人踩过一次了，只是当时只补了被踩到的那一条 ——
+    # 一条规则被补全，同形状的邻居却没有，是这份规则表最容易漏的地方。
     ("ac_warmer",   "aircon", re.compile(
         r"(?:空调|温度|度数).{0,3}?(?:调)?[高热暖](?:一)?点"
+        r"|(?:调|开)[高热暖](?:一点)?空调|把空调(?:调)?[高热暖]"
         r"|太冷了|冷死了|有点冷|冻死")),
     ("ac_cooler",   "aircon", re.compile(
         r"(?:空调|温度|度数).{0,3}?(?:调)?[低冷凉](?:一)?点"
+        r"|(?:调|开)[低冷凉](?:一点)?空调|把空调(?:调)?[低冷凉]"
         r"|太热了|热死了|有点热|太闷|闷死")),
     ("ac_status",   "aircon", re.compile(r"空调(?:现在)?(?:是)?(?:多少度|几度|什么状态|开着吗)")),
-    ("ac_on",       "aircon", re.compile(r"(?:打开|开启|开)(?:一下)?空调|制冷|制热|除湿|来点冷风")),
+    ("ac_on",       "aircon", re.compile(
+        r"(?:打开|开启|开)(?:一下)?空调|空调(?:打开|开启|开)(?:一下|起来)?"
+        r"|制冷|制热|除湿|来点冷风")),
 
     # ---------------- 3. 灯专有 ----------------
     ("max",         "light", re.compile(r"最亮|全亮|开到最大|亮度最大")),
@@ -260,8 +276,17 @@ _RULES: list[tuple[str, Domain, re.Pattern[str]]] = [
     ("reading",     "light", re.compile(r"看书|阅读|读书")),
     ("sleep",       "light", re.compile(r"夜灯|月光|睡眠模式")),
     # 「灯」这个字是灯的护照：带上它就不会和音响抢词，所以开关词可以放得宽一些
-    ("off",         "light", re.compile(r"关(?:掉|闭|上|了)?(?:一下)?[台吊壁]?灯|把灯关|熄灯|灯灭了|不用灯")),
-    ("on",          "light", re.compile(r"(?:打)?开(?:一下)?[台吊壁]?灯|把灯开|灯亮起来|来点光|太黑")),
+    # 两种语序都要收，和空调那边是同一个坑（见 ac_on 上面那段）：
+    #     动宾  打开台灯 / 关掉灯
+    #     主谓  台灯打开 / 把灯关掉
+    # 这次是全面体检时扫出来的 —— 空调那条补过之后，灯这条同形状的还漏着。
+    # 补一处、不补它同形状的邻居，是这份规则表最稳定的漏法。
+    ("off",         "light", re.compile(
+        r"关(?:掉|闭|上|了)?(?:一下)?[台吊壁]?灯|[台吊壁]?灯(?:给)?关(?:掉|闭|上|了)?"
+        r"|把[台吊壁]?灯关(?:掉|闭|上|了)?|熄灯|灯灭了|不用灯")),
+    ("on",          "light", re.compile(
+        r"(?:打)?开(?:一下)?[台吊壁]?灯|[台吊壁]?灯(?:给)?(?:打)?开(?:一下|起来)?"
+        r"|把[台吊壁]?灯(?:打)?开|灯亮起来|来点光|太黑")),
 
     # ---------------- 4. 泛化词（靠上一次操作的设备消歧）----------------
     ("amb_off",    "none", re.compile(r"^(?:关(?:掉|闭|上|了)?|停|停下)$")),
@@ -272,7 +297,25 @@ _RULES: list[tuple[str, Domain, re.Pattern[str]]] = [
     ("amb_lower",  "none", re.compile(r"^(?:再)?(?:调)?[低小](?:一)?点$")),
     ("amb_prev",   "none", re.compile(r"^(?:上一个|上个)$")),
     ("toggle",     "light", re.compile(r"切换|反过来")),
+    # ---- 只说了个设备名，没说要它干什么 ----
+    #
+    # 「空调。」这样一句，以前的回答是"这个我还不会"。但它其实是**信息量最大的
+    # 一种没听懂** —— 我们准确知道他在说哪台设备，只是不知道要干什么。
+    #
+    # 它在现实中很常见，因为板上的端点检测会把带停顿的句子切断：实测用户说
+    # 「空调……调低一点」，中间停了两秒，板子就只送上来「空调」（见 §4.1.23）。
+    # 与其把这半句扔掉，不如接着问一句 —— 用户补一个「调低一点」就成了，
+    # 而那正是他本来就要说的下半句。
+    #
+    # 放在**规则表最末**：任何一条真命令都该先匹配上，这条只捡剩下的。
+    ("bare_device", "none",
+     re.compile(r"^(?:那个|这个|把|我的)?(?:空调|台灯|吊灯|壁灯|灯|音响|收音机|音乐|歌)(?:呢|啊|吧|嘛)?$")),
 ]
+
+# 裸设备名 -> 该把哪个域顶到最前面
+_BARE_DEVICE = {"空调": "aircon", "台灯": "light", "吊灯": "light", "壁灯": "light",
+                "灯": "light", "音响": "tivoli", "收音机": "tivoli",
+                "音乐": "music", "歌": "music"}
 
 
 # ---------------------------------------------------------------- 构造器
@@ -423,6 +466,10 @@ _BUILD: dict[str, Callable[[re.Match[str], str, str], Intent | None]] = {
     "mode_repeat_all":  _simple("music", "set_mode", "", mode="repeat_all"),
     "music_play":       _b_music_play,
     # aircon
+    "bare_device":  lambda m, raw, rule: Intent(
+        domain="none", action="clarify",
+        slots={"device": next(k for k in _BARE_DEVICE if k in m.group(0))},
+        raw=raw, rule=rule),
     "ac_off":       _simple("aircon", "off", "空调关了"),
     "ac_on":        _b_ac_on,
     "ac_set_temp":  _b_temp,
@@ -502,6 +549,23 @@ def _to_pinyin(text: str) -> str:
     return "".join(lazy_pinyin(text, style=Style.NORMAL, errors=lambda x: x))
 
 
+# 「调」在拼音层一律写成 (?:tiao|diao)。
+#
+# pinyin_fix 已经把「调低」「调亮」这些搭配的读音修成了 tiáo，但那依赖**分词切对**。
+# 而这一层的输入来自 STT，同音错字恰恰会把分词打乱：「调低空调」被听成
+# 「调地空调」之后，"调地" 不在词典里，「调」就回落成默认的 diào，
+# 整条规则当场失配（实测 STT='调地空调。' -> none）。
+#
+# 与其去追每一个同音错字（追不完，这就是拼音层存在的理由），不如认下多音字的
+# 两个读法。后面跟着的限定词已经足够具体，不会误伤「掉」「吊」。
+_TIAO = r"(?:tiao|diao)"
+# 「空调」里那个「调」也一样会被带偏 —— 而且是被**句子里别处的错字**带偏的：
+#     调高空调 -> tiaogaokongtiao      （对）
+#     掉高空调 -> diaogaokong[diao]    （连词尾的空调都跟着变了）
+# 多音字在这儿是**位置性**的问题，不是词汇性的：一个错字会把整句里所有「调」
+# 的读法一起改掉，包括我们以为安全的那些。所以凡是写「调」的地方都得认两个音。
+_KT = r"kong" + _TIAO
+
 # 拼音层：只覆盖**固定说法**。
 # 歌名歌手不放进来 —— 那部分本来就该交给网易云自己的模糊搜索去兜，
 # 在这里拿拼音去猜"红豆"还是"洪都"只会把一个能查的词毁掉。
@@ -516,14 +580,14 @@ _PINYIN_RULES: list[tuple[str, Domain, re.Pattern[str]]] = [
     ("tivoli_off",       "tivoli", re.compile(r"guan(?:diao|bi|shang|le)?(?:yinxiang|shouyinji|guangbo|diantai)")),
     ("tivoli_on",        "tivoli", re.compile(r"(?:dakai|kaiqi)yinxiang")),
     ("radio_on",         "tivoli", re.compile(r"shouyinji|guangbo|diantai|tiaopin")),
-    ("volume_up",        "tivoli", re.compile(r"(?:shengyin|yinliang)(?:tiao)?(?:da|gao)|dadianshen|dashengyi?dian|taixiaosheng")),
-    ("volume_down",      "tivoli", re.compile(r"(?:shengyin|yinliang)(?:tiao)?(?:xiao|di)|xiaodianshen|xiaoshengyi?dian|taichao")),
+    ("volume_up",        "tivoli", re.compile(r"(?:shengyin|yinliang)(?:" + _TIAO + r")?(?:da|gao)|" + _TIAO + r"(?:da|gao)(?:shengyin|yinliang)|dadianshen|dashengyi?dian|taixiaosheng")),
+    ("volume_down",      "tivoli", re.compile(r"(?:shengyin|yinliang)(?:" + _TIAO + r")?(?:xiao|di)|" + _TIAO + r"(?:xiao|di)(?:shengyin|yinliang)|xiaodianshen|xiaoshengyi?dian|taichao")),
     ("mute",             "tivoli", re.compile(r"jingyin|xiaoyin|biechusheng")),
-    ("ac_off",      "aircon", re.compile(r"guan(?:diao|bi|shang|le)?(?:yixia)?kongtiao|kongtiaoguan")),
-    ("ac_warmer",   "aircon", re.compile(r"(?:kongtiao|wendu|dushu).{0,6}?(?:gao|re|nuan)yi?dian|taileng|lengsile|youdianleng|dongsi")),
-    ("ac_cooler",   "aircon", re.compile(r"(?:kongtiao|wendu|dushu).{0,6}?(?:di|leng|liang)yi?dian|taire|resile|youdianre|taimen|mensi")),
-    ("ac_status",   "aircon", re.compile(r"kongtiao(?:xianzai)?(?:shi)?(?:duoshaodu|jidu|shenmezhuangtai|kaizhema)")),
-    ("ac_on",       "aircon", re.compile(r"(?:dakai|kaiqi|kai)(?:yixia)?kongtiao|zhileng|zhire|chushi")),
+    ("ac_off",      "aircon", re.compile(r"guan(?:diao|bi|shang|le)?(?:yixia)?" + _KT + r"|" + _KT + r"guan")),
+    ("ac_warmer",   "aircon", re.compile(r"(?:" + _KT + r"|wendu|dushu).{0,6}?(?:gao|re|nuan)yi?dian|(?:" + _TIAO + r"|kai)(?:gao|re|nuan)(?:yidian)?" + _KT + r"|ba" + _KT + r"(?:" + _TIAO + r")?(?:gao|re|nuan)|taileng|lengsile|youdianleng|dongsi")),
+    ("ac_cooler",   "aircon", re.compile(r"(?:" + _KT + r"|wendu|dushu).{0,6}?(?:di|leng|liang)yi?dian|(?:" + _TIAO + r"|kai)(?:di|leng|liang)(?:yidian)?" + _KT + r"|ba" + _KT + r"(?:" + _TIAO + r")?(?:di|leng|liang)|taire|resile|youdianre|taimen|mensi")),
+    ("ac_status",   "aircon", re.compile(r"" + _KT + r"(?:xianzai)?(?:shi)?(?:duoshaodu|jidu|shenmezhuangtai|kaizhema)")),
+    ("ac_on",       "aircon", re.compile(r"(?:dakai|kaiqi|kai)(?:yixia)?" + _KT + r"|" + _KT + r"(?:dakai|kaiqi|kai)(?:yixia|qilai)?|zhileng|zhire|chushi")),
     ("music_favorites",  "music",  re.compile(r"wo(?:de)?shoucang|wo(?:xihuan|xiai|aiting)de(?:yinyue|ge|gequ)?|woshoucangde(?:ge|yinyue)?|hongxingequ|wodegedan")),
     ("music_next",       "music",  re.compile(r"xiayishou|xiashou|huanyishou|qiege")),
     ("music_prev",       "music",  re.compile(r"shangyishou|shangshou|qianyishou")),
@@ -537,8 +601,8 @@ _PINYIN_RULES: list[tuple[str, Domain, re.Pattern[str]]] = [
     ("music_now",        "music",  re.compile(r"shenmege|zhengzaifangde?shishenme|zheshishenmege")),
     ("max",      "light", re.compile(r"zuiliang|quanliang|liangdu?zuida")),
     ("min",      "light", re.compile(r"zuian|weiguang")),
-    ("brighter", "light", re.compile(r"liangyi?dian|liangyixie|tiaoliang|zailiang|gengliang|taian")),
-    ("dimmer",   "light", re.compile(r"anyi?dian|anyixie|tiaoan|zaian|gengan|tailiang|taicijing?")),
+    ("brighter", "light", re.compile(r"liangyi?dian|liangyixie|" + _TIAO + r"liang|zailiang|gengliang|taian")),
+    ("dimmer",   "light", re.compile(r"anyi?dian|anyixie|" + _TIAO + r"an|zaian|gengan|tailiang|taicijing?")),
     ("warm",     "light", re.compile(r"nuanguang|nuanyidian|nuanse|huangguang|nuanbai")),
     ("cool",     "light", re.compile(r"lengguang|lengyidian|lengse|baiguang|lengbai")),
     ("reading",  "light", re.compile(r"kanshu|yuedu|dushu")),

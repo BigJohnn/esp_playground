@@ -31,6 +31,7 @@ class LightExecutor:
         self._entity: str | None = None
         self._local = None
         self._local_failures = 0
+        self._local_tripped_at = 0.0
 
     # ---------- 本地路径 ----------
 
@@ -57,7 +58,22 @@ class LightExecutor:
                 await asyncio.to_thread(light.dev.warm)
             await asyncio.sleep(period_s)
 
+    # 本地路连续失败几次之后，暂时别再试了。
+    #
+    # 灯泡拔了电的时候，每条命令都要先在局域网找它一遍才肯退回 HA。
+    # 单次已经压到 2.5 秒（见 miio.LOCAL_BUDGET_S），但**每条命令都白等 2.5 秒**
+    # 仍然很难受，而这时候我们其实已经知道它不在了。
+    # 冷却期一过自动再试一次 —— 灯泡插回电、或者换了网段，都能自己恢复，
+    # 不需要重启服务端。
+    _LOCAL_TRIP_AT = 3
+    _LOCAL_COOLDOWN_S = 60.0
+
     async def _run_local(self, intent: Intent) -> bool:
+        if self._local_failures >= self._LOCAL_TRIP_AT:
+            if time.time() - self._local_tripped_at < self._LOCAL_COOLDOWN_S:
+                return False        # 冷却中，直接走 HA
+            _LOG.info("局域网直控冷却期满，再试一次")
+            self._local_failures = 0
         light = self._ensure_local()
         if light is None:
             return False
@@ -65,6 +81,10 @@ class LightExecutor:
             await asyncio.to_thread(self._apply_local, light, intent)
         except Exception as exc:  # noqa: BLE001 - 本地失败就退回 HA，不该让整条链断掉
             self._local_failures += 1
+            if self._local_failures == self._LOCAL_TRIP_AT:
+                self._local_tripped_at = time.time()
+                _LOG.warning("miIO 直控连续失败 %d 次，%.0f 秒内直接走 Home Assistant",
+                             self._local_failures, self._LOCAL_COOLDOWN_S)
             _LOG.warning("miIO 直控失败(%d 次): %s，回退到 Home Assistant",
                          self._local_failures, exc)
             return False
@@ -255,7 +275,7 @@ class Router:
         # 有问题悬着的话，先按"这是在回答"试一次。**必须在意图解析之前** ——
         # 「第二个」在普通意图里什么都不是，走到 LLM 那层还可能被瞎猜成别的。
         # answer() 认不出来会还回 None，那时候再原样往下走，一个字都不会被吞掉。
-        answered = await self._answer_domain(text)
+        answered = await self._answer_slot(text) or await self._answer_domain(text)
         if answered is not None:
             return answered
 
@@ -275,6 +295,11 @@ class Router:
         # 选完之后回头看一眼：刚才真的分得清吗？
         # 灯开着、音乐也放着、话题又帮不上忙的时候说「关掉」，
         # rank() 还是会排出一个第一名，但那只是排序，不是把握。
+        # 只说了个设备名（多半是句子被端点检测切断了，见 README §4.1.23）。
+        # 这是**信息量最大的一种没听懂**：设备是确定的，缺的只是动作。
+        if parsed.action == "clarify":
+            return self._ask_slot(text, str(parsed.slots.get("device") or ""))
+
         if parsed.via:
             parsed.confidence = self.ctx.confidence_for(parsed.via)
         amb = self.ctx.ambiguous(intent_mod.ambiguous_domains(parsed.rule))
@@ -336,6 +361,49 @@ class Router:
         _LOG.info("「%s」在 %s 之间分不清，反问", text, "/".join(names))
         return Intent(domain="none", action="ask", slots={}, reply=q.text,
                       raw=text, rule="ask_domain"), True, q.text
+
+    def _ask_slot(self, text: str, device: str) -> tuple[Intent, bool, str]:
+        """听到了设备名但没听到动作 —— 问他要干什么。
+
+        以前这里回的是"这个我还不会"，而那句话是**假的**：我们明明知道他在说空调。
+        真实场景里这半句多半是板上端点检测切出来的（用户说「空调……调低一点」，
+        中间停了两秒），用户补上的下半句就是他本来要说的那半句。
+        """
+        dom = intent_mod._BARE_DEVICE.get(device, "")
+        q = Question(kind="slot", options=[{"domain": dom}],
+                     text=f"{device}要怎么样？", deadline=time.time() + _QUESTION_TTL)
+        self.ctx.question = q
+        self.ctx.record(text, "none", "clarify", False, q.text)
+        _LOG.info("只听到设备名「%s」，反问要干什么（多半是句子被切断了）", device)
+        return Intent(domain="none", action="ask", slots={"device": device},
+                      reply=q.text, raw=text, rule="ask_slot"), True, q.text
+
+    async def _answer_slot(self, text: str) -> tuple[Intent, bool, str] | None:
+        """把这一句当成"那台设备要怎么样"的回答。
+
+        做法是把那个域**顶到候选顺序最前面**再重解一遍，而不是自己拼一个意图 ——
+        「调低一点」「关掉」「调到25度」在那个焦点下本来就都解得出来，
+        重解一次比手工拼可靠得多，也不会漏掉句子里带的幅度/方向信息。
+        """
+        q = self.ctx.question
+        if q is None or q.kind != "slot" or q.expired:
+            return None
+        dom = (q.options[0] or {}).get("domain") if q.options else None
+        if not dom:
+            return None
+        order = [dom] + [d for d in self.ctx.rank(self._DOMAINS) if d != dom]
+        parsed = intent_mod.parse(text, order)
+        if parsed.domain == "none":
+            # 补的这句还是没听懂。**别把问题留着** —— 留着的话用户下一句
+            # 说别的会被这个焦点带偏。撤掉，让它走正常流程。
+            self.ctx.question = None
+            return None
+        self.ctx.question = None
+        ok, reply = await self.execute(parsed)
+        self.ctx.record(text, parsed.domain, parsed.action, ok, reply)
+        if ok:
+            self._note_effect(parsed)
+        return parsed, ok, reply
 
     async def _answer_domain(self, text: str) -> tuple[Intent, bool, str] | None:
         """把一句话当成对"哪台设备"的回答。不是就还回 None。"""
