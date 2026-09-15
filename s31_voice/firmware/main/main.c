@@ -5,7 +5,7 @@
  *          └─ 不认识 -> 整段 PCM -> POST /utterance -> 服务端 ASR  （慢，兜底）
  *                                 -> POST /tts -> 从喇叭念出回话（需 S31_HAS_SPEAKER）
  *
- * 两条路都只把"一句中文"交给服务端，意图解析和控灯留在服务端一处实现。
+ * 默认把中文交给服务端解析；实验性本地 IR 模式让两条音量命令直接走 RMT。
  *
  * 命令词表开机时从服务端拉（服务端是唯一来源，改词不用重烧固件）；
  * 拉不到就用编译进来的那份 —— 断网时唤醒和识别仍然能工作，只是控不了灯。
@@ -32,6 +32,7 @@
 #include "freertos/task.h"
 #include "led_strip.h"
 #include "net.h"
+#include "local_ir.h"
 #include "sr.h"
 #include "voice.h"
 
@@ -39,6 +40,9 @@ static const char *TAG = "main";
 
 static led_strip_handle_t s_led;
 static QueueHandle_t s_action_queue;
+#if CONFIG_S31_HAS_SPEAKER
+static esp_codec_dev_handle_t s_feedback_codec;
+#endif
 
 /* 交给 action_task 的一件活。两条路径共用一个队列，因为它们的后半段
  * （等服务端、点灯、恢复状态）完全一样，分成两条只会重复。 */
@@ -57,15 +61,18 @@ static const struct {
     const char *text;
     const char *phonemes;
 } k_default_commands[] = {
-    { "打开台灯", "da kai tai deng" },
-    { "关闭台灯", "guan bi tai deng" },
-    { "亮一点",  "liang yi dian" },
-    { "暗一点",  "an yi dian" },
-    { "全亮模式", "quan liang mo shi" },
-    { "黄光模式", "huang guang mo shi" },
-    { "冷光模式", "leng guang mo shi" },
-    { "阅读模式", "yue du mo shi" },
-    { "夜灯模式", "ye deng mo shi" },
+    { "打开台灯",  "da kai tai deng" },
+    { "关闭台灯",  "guan bi tai deng" },
+    { "亮一点",   "liang yi dian" },
+    { "暗一点",   "an yi dian" },
+    { "全亮模式",  "quan liang mo shi" },
+    { "黄光模式",  "huang guang mo shi" },
+    { "冷光模式",  "leng guang mo shi" },
+    { "阅读模式",  "yue du mo shi" },
+    { "夜灯模式",  "ye deng mo shi" },
+    { "打开收音机", "da kai shou yin ji" },
+    { "关掉收音机", "guan diao shou yin ji" },
+    { "暂停播放",  "zan ting bo fang" },
 };
 
 static void led_init(void)
@@ -116,6 +123,11 @@ static void on_server_command(int id, const char *text, const char *phonemes, vo
 static void load_commands(void)
 {
     sr_commands_begin();
+    if (local_ir_profile_enabled()) {
+        local_ir_stage_commands();
+        sr_commands_commit();
+        return;
+    }
     if (net_server_url() &&
         net_fetch_commands(on_server_command, NULL, s_cmd_version, sizeof(s_cmd_version)) == ESP_OK) {
         sr_commands_commit();
@@ -168,7 +180,8 @@ static void commands_task(void *arg)
             continue;      /* 服务端一时不在，下一轮再说，别刷屏 */
         }
         fails = 0;
-        if (strcmp(ver, s_cmd_version) == 0) {
+        /* 本地模式保留服务发现/心跳，但词表由固件固定，不能被服务端覆盖。 */
+        if (local_ir_profile_enabled() || strcmp(ver, s_cmd_version) == 0) {
             continue;
         }
         ESP_LOGI(TAG, "词表版本 %s -> %s，重新拉取",
@@ -195,7 +208,7 @@ static void on_sr_event(const sr_result_t *res, void *ctx)
          * 唤醒词和命令词之间有 0.5~1 秒，正好够音量降下去，
          * 让**第一句命令**就落在安静背景上。
          * 实测不这么做的后果：放着歌说话，服务端收到的是「🎼我唱唱给的算」。 */
-        net_notify_wake();
+        if (!local_ir_profile_enabled()) net_notify_wake();
         break;
     case SR_EVENT_TIMEOUT:
         led_set(0, 24, 0);           /* 绿：回到待唤醒 */
@@ -402,8 +415,25 @@ static void action_task(void *arg)
         if (xQueueReceive(s_action_queue, &act, portMAX_DELAY) != pdTRUE) {
             continue;
         }
-        if (!net_server_url()) {
-            ESP_LOGW(TAG, "没连上服务端，这句话只能干听着");
+        esp_err_t ir_result = ESP_OK;
+        if (!act.is_utterance && local_ir_execute(act.text, &ir_result)) {
+            /* Local ownership is final even on timeout: a second route could
+             * repeat an action already received by the appliance. */
+            s_followup_left = 0;
+            s_asking = false;
+            ESP_LOGI(TAG, "本地红外「%s」: %s（发射结果，不代表设备回执）",
+                     act.text, esp_err_to_name(ir_result));
+#if CONFIG_S31_HAS_SPEAKER
+            sr_set_muted(true);
+            audio_hw_play_tone(s_feedback_codec, ir_result == ESP_OK ? 880 : 330, 80, 1800);
+            static const int16_t silence[1600] = {0};
+            audio_hw_write_mono(s_feedback_codec, silence, sizeof(silence));
+            audio_hw_write_mono(s_feedback_codec, silence, sizeof(silence));
+            sr_set_muted(false);
+#endif
+            if (ir_result != ESP_OK) led_blink(24, 0, 0, 2);
+        } else if (!net_server_url()) {
+            ESP_LOGW(TAG, "没连上服务端，且没有本地动作映射");
             if (act.is_utterance) {
                 sr_release_utterance();
             }
@@ -433,6 +463,13 @@ void app_main(void)
         ESP_LOGE(TAG, "音频初始化失败");
         led_set(24, 0, 0);
         return;
+    }
+#if CONFIG_S31_HAS_SPEAKER
+    s_feedback_codec = codec;
+#endif
+    esp_err_t ir_init = local_ir_init();
+    if (ir_init != ESP_OK) {
+        ESP_LOGE(TAG, "本地红外初始化失败: %s；不会回退到另一块板发射", esp_err_to_name(ir_init));
     }
     audio_hw_set_volume(codec, CONFIG_S31_SPEAKER_VOLUME);
     audio_hw_set_mic_gain(codec, (float)CONFIG_S31_MIC_GAIN_DB);
@@ -464,11 +501,12 @@ void app_main(void)
     }
 
     led_set(0, 24, 0);
-    ESP_LOGI(TAG, "就绪。说「你好小智」唤醒，然后说「打开台灯」。");
+    ESP_LOGI(TAG, "就绪。说「你好小智」唤醒，然后说「%s」。",
+             local_ir_profile_enabled() ? "声音大一点" : "打开台灯");
     /* "我起来了、而且连上服务端了" —— 这一句只有开机时说得着。
      * 接了喇叭就念出来（顺带每次上电自检一遍播放链路）；没接就闪两下绿灯，
      * 反正断网时底色也是绿的，光看常亮分不出连没连上。 */
-    if (net_server_url()) {
+    if (net_server_url() && !local_ir_profile_enabled()) {
         led_blink(0, 24, 0, 2);
         led_set(0, 24, 0);
         voice_say("语音助手就绪");

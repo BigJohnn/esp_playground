@@ -64,4 +64,25 @@ config S31_COMMAND_TIMEOUT_MS
     int "唤醒后等命令词的时间 (ms)"
     default 6000
 
+config S31_LOCAL_IR_ENABLED
+    bool "本地红外双命令验证模式（需先接好发射电路）"
+    default n
+    help
+        启用后用「声音大一点/声音小一点」两条专用词表验证单主控红外。
+        不下载服务器的词表。但**只有 MultiNet 命中时才算板端独占** ——
+        没命中的整句仍然走 /utterance 到服务端，服务端照样会执行它
+        （2026-09-14 实测：MultiNet 0/6，而服务端 STT 每次都听对并执行了）。
+        所以命中率是 0 的时候，这个模式等于只是把词表砍成了两条。
+        只支持已录制的 Tivoli 音量±；不包含电源切换、切源、空调或通用学习。
+
+config S31_IR_TX_GPIO
+    int "红外驱动输入连接的 GPIO（-1=未配置）"
+    range -1 61
+    default -1
+    depends on S31_LOCAL_IR_ENABLED
+    help
+        必须核对实物原理图。GPIO50–61 为当前 CoreBoard 音频/调试保留。
+        GPIO 只连接驱动输入，不能直接驱动大电流红外 LED。
+        本模式不操作原 ESP-IR 板的 GPIO21 供电使能；请使用确认过的独立收发电路。
+
 endmenu
