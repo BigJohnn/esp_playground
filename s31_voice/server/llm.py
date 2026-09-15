@@ -146,8 +146,52 @@ _ALLOWED = {
 # 与其因为域错了整条丢掉，不如按动作把它修回来。
 _ACTION_HOME = {a: d for d, acts in _ALLOWED.items() for a in acts
                 if sum(a in x for x in _ALLOWED.values()) == 1}
-# 槽位名 -> Intent 上的字段。扁平的 schema 比嵌套的 slots 好填得多。
-_SLOT_KEYS = ("preset", "step", "query", "pct", "kelvin", "temp")
+# 每个动作只接收它用得到的槽位；缺参数或类型/范围错误时放弃模型结果。
+# JSON schema 是生成约束，不能替代执行前校验（尤其 bool 在 Python 中也是 int）。
+_SLOT_LIMITS = {
+    "pct": (0, 100), "kelvin": (2700, 6500), "preset": (1, 6), "temp": (17, 30),
+}
+_ACTION_SLOTS = {
+    ("light", "on"): ("pct", "kelvin"),
+    ("light", "brightness"): ("pct",),
+    ("light", "brightness_step"): ("step",),
+    ("light", "color_temp"): ("kelvin",),
+    ("tivoli", "preset_recall"): ("preset",),
+    ("tivoli", "preset_save"): ("preset",),
+    ("tivoli", "volume_step"): ("step",),
+    ("tivoli", "station_step"): ("step",),
+    ("music", "play"): ("query",),
+    ("aircon", "on"): ("temp",),
+    ("aircon", "set_temp"): ("temp",),
+    ("aircon", "temp_step"): ("step",),
+}
+
+
+def _validated_slots(data: dict, domain: str, action: str) -> dict | None:
+    slots = {}
+    for key in _ACTION_SLOTS.get((domain, action), ()):
+        value = data.get(key)
+        if value is None:
+            if action == "on":       # on 的参数可选；其余动作必须给齐
+                continue
+            return None
+        if key == "query":
+            if not isinstance(value, str) or not value.strip() or len(value) > 200:
+                return None
+            slots[key] = value.strip()
+            continue
+        if type(value) is not int:
+            return None
+        if key == "step":
+            limit = {"light": 100, "tivoli": 10, "aircon": 13}[domain]
+            if value == 0 or not -limit <= value <= limit:
+                return None
+        else:
+            low, high = _SLOT_LIMITS[key]
+            if not low <= value <= high:
+                return None
+        slots[key] = value
+    return slots
 
 
 class LocalLLM:
@@ -231,7 +275,9 @@ class LocalLLM:
         data = await self._ask(_CLASSIFY_PROMPT % (_ground(ctx), text), _SCHEMA)
         if not data:
             return None
-        domain, action = data.get("domain"), str(data.get("action") or "")
+        domain, action = data.get("domain"), data.get("action")
+        if not isinstance(domain, str) or not isinstance(action, str):
+            return None
         if domain not in _ALLOWED or action not in _ALLOWED[domain]:
             home = _ACTION_HOME.get(action)
             if home is None:
@@ -241,7 +287,10 @@ class LocalLLM:
             _LOG.info("LLM 把域说成了 %s，但 %s 只有 %s 有 —— 按动作修回来",
                       domain, action, home)
             domain = home
-        slots = {k: data[k] for k in _SLOT_KEYS if data.get(k) not in (None, "", 0)}
+        slots = _validated_slots(data, domain, action)
+        if slots is None:
+            _LOG.info("LLM %s.%s 参数缺失或无效，放弃该结果", domain, action)
+            return None
         return {"domain": domain, "action": action, "slots": slots,
                 "reply": str(data.get("reply", ""))[:24]}
 

@@ -326,8 +326,14 @@ class Router:
                           "没中" if parsed.domain == "none" else "没把握",
                           parsed.rule or "-", parsed.confidence,
                           guess["domain"], guess["action"])
+                slots = guess.get("slots") or {}
+                light_slots = ({
+                    "brightness_pct": slots.get("pct"),
+                    "brightness_step_pct": slots.get("step"),
+                    "color_temp_kelvin": slots.get("kelvin"),
+                } if guess["domain"] == "light" else {})
                 parsed = Intent(domain=guess["domain"], action=guess["action"],
-                                slots=guess.get("slots") or {},
+                                **light_slots, slots=slots,
                                 reply=guess.get("reply", ""), raw=text, rule="llm",
                                 confidence=0.6)
 
