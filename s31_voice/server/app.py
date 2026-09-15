@@ -271,27 +271,6 @@ async def music_status():
     return _music.status()
 
 
-# 要开机的 Tivoli 动作：这几条会触发"按 POWER + 等重新入网"，半分钟起步。
-_TIVOLI_SLOW = {"radio_on", "power_on", "preset_recall", "preset_save", "station_step"}
-
-
-async def _maybe_defer(parsed) -> tuple[bool, str] | None:
-    """慢动作转后台，先回一句实话。
-
-    起因是实测：Tivoli 关着时说「打开收音机」，整条命令花了 **57 秒**才返回 ——
-    按 POWER、等它重新入网（28 秒）、再锚定。这期间板子一声不吭，
-    用户的结论必然是"坏了"，然后再说一遍，于是又排一个 57 秒。
-
-    把"慢"变成"说清楚要慢"，是这里唯一能做的诚实处理：设备就是要那么久开机。
-    """
-    if parsed.domain != "tivoli" or parsed.action not in _TIVOLI_SLOW:
-        return None
-    if not await _tivoli.needs_cold_start():
-        return None
-    asyncio.create_task(_router.execute(parsed))
-    return True, "音响关着，我先给你开起来，得等半分钟"
-
-
 def _commands_payload() -> dict:
     """词表 + 版本号。版本是内容的哈希，不是手工维护的序号 ——
     手工序号一定会有人忘了改，而忘了改的后果是板子上挂着一张旧表还以为是新的。"""
@@ -370,12 +349,7 @@ async def command_endpoint(request: Request):
     t = _Timer()
     payload = await request.json()
     text = payload.get("text", "")
-    parsed = intent_mod.parse(text, _router.ctx.rank(_router._DOMAINS))
-    deferred = await _maybe_defer(parsed)
-    if deferred is not None:
-        ok, reply = deferred
-    else:
-        parsed, ok, reply = await _router.parse_and_execute(text)
+    parsed, ok, reply = await _router.parse_and_execute(text)
     t.mark("exec")
     fu = _followup_fields(parsed, ok)
     _LOG.info("命令词 %r 意图=%s.%s(%s) 执行=%s 追问=%s  [%s]", text, parsed.domain,
@@ -428,12 +402,7 @@ async def utterance_endpoint(request: Request):
         return JSONResponse({"text": text, "domain": "none", "action": "none",
                              "rule": parsed.rule, "slots": {}, "ok": ok, "reply": reply,
                              "ms": t.done(), **_followup_fields(parsed, ok)})
-    parsed = intent_mod.parse(text, _router.ctx.rank(_router._DOMAINS))
-    deferred = await _maybe_defer(parsed)
-    if deferred is not None:
-        ok, reply = deferred
-    else:
-        parsed, ok, reply = await _router.parse_and_execute(text)
+    parsed, ok, reply = await _router.parse_and_execute(text)
     t.mark("exec")
     fu = _followup_fields(parsed, ok)
     # 顺带记一个"识别快过实时多少倍"：STT 慢是慢在模型还是慢在这句话太长，
