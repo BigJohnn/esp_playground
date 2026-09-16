@@ -146,10 +146,61 @@ _ALLOWED = {
 # 与其因为域错了整条丢掉，不如按动作把它修回来。
 _ACTION_HOME = {a: d for d, acts in _ALLOWED.items() for a in acts
                 if sum(a in x for x in _ALLOWED.values()) == 1}
-# 每个动作只接收它用得到的槽位；缺参数或类型/范围错误时放弃模型结果。
+
+# 但这个修复**必须看原话**，否则它会往错的设备上发指令。
+#
+# 模型答错的时候，域和动作总有一个是幻觉，而上面那行无条件地认定"幻觉的是域"。
+# 反例：对着「这首太吵了」它吐 music.brightness_step，brightness_step 只有 light 有，
+# 于是被修成 light.brightness_step —— **去调台灯亮度**。可原话里"这首"明明白白
+# 指着音乐，句子里的域信号是强的，幻觉的是动作。
+#
+# 所以判据是：**它说的那个域，原话佐证了没有**。
+#   佐证了，而且**要修去的那个域没被佐证** -> 域是对的，动作是幻觉 -> 丢掉
+#   其余情况                                -> 按动作修回来（原来那条路）
+#
+# 后半个条件是拿反例逼出来的。只判"原域被佐证就丢"会误伤：
+# 「这首歌音量小一点」里 music 被"歌/这首"佐证，但 tivoli 也被"音量"佐证，
+# 而 volume_step 确实只有 tivoli 有 —— 这时候丢掉等于回一句"我不会"，
+# 用户明明说得清清楚楚。两边都被提到时，动作才是那个分得开的信号。
+#「把收音机声音关小」里没有"音乐/歌/这首"，music 得不到佐证，照旧修成 tivoli。
+_DOMAIN_WORDS = {
+    "light": ("台灯", "吊灯", "壁灯", "灯"),
+    "tivoli": ("音响", "收音机", "电台", "广播", "音量", "声音"),
+    "music": ("音乐", "歌", "这首", "那首", "这曲", "专辑", "歌单"),
+    # 不收单字"度"：角度、程度、再调亮一度都会误伤
+    "aircon": ("空调", "冷气", "暖气", "温度"),
+}
+
+
+def _corroborated(raw: str, domain: str) -> bool:
+    """原话里有没有指向这个域的设备词。"""
+    return any(w in (raw or "") for w in _DOMAIN_WORDS.get(domain, ()))
+
+
+# 每个动作只接收它用得到的槽位；类型/范围错误时放弃模型结果。
 # JSON schema 是生成约束，不能替代执行前校验（尤其 bool 在 Python 中也是 int）。
 _SLOT_LIMITS = {
     "pct": (0, 100), "kelvin": (2700, 6500), "preset": (1, 6), "temp": (17, 30),
+}
+# **绝对值槽位必须在原话里找得到依据**，不管它是必填的还是可选的。
+#
+# schema 里摆着 pct/kelvin/temp 这些字段，模型就会顺手把它们填满。
+# 实测（2026-09-16，qwen3:4b 真跑）十句话里有七句带着 "pct":0,"kelvin":0,"temp":0
+# 这样的填充值，而其中一条是会出事的：
+#
+#     「太亮了受不了」 -> light.brightness pct=0
+#
+# 0 落在 [0,100] 之内，范围检查一个字都挑不出来，于是灯被设成最低亮度 ——
+# 一个用户从没说过的**绝对值**。这比编造动作危险：编的动作有白名单挡着，
+# 编的数值长得和真数值一模一样。
+#
+# 判据不是"值合不合法"，是"用户到底说没说过这件事"。
+# 刻意不收裸中文数词："调暗一点""开一下"里的"一"会让任何填充值都过关。
+_SLOT_EVIDENCE = {
+    "pct": re.compile(r"[0-9]|百分之|亮度|一半|最亮|最暗"),
+    "kelvin": re.compile(r"[0-9]|色温|暖光|冷光|暖色|冷色|白光|黄光"),
+    "temp": re.compile(r"[0-9]|[零一二两三四五六七八九十]+\s*度|多少度"),
+    "preset": re.compile(r"[0-9]|第[零一二两三四五六七八九十]|[零一二两三四五六七八九十]\s*[个台号]"),
 }
 _ACTION_SLOTS = {
     ("light", "on"): ("pct", "kelvin"),
@@ -167,31 +218,83 @@ _ACTION_SLOTS = {
 }
 
 
-def _validated_slots(data: dict, domain: str, action: str) -> dict | None:
-    slots = {}
+# 缺了可以问回去的槽位。问句要能用一句人话问出来、答案是一个**裸值**，
+# 这两条同时成立才放进来。
+#
+# step 刻意不在里面：「调高还是调低」本身就是这条指令的全部内容，
+# 模型给出 brightness_step 却给不出方向，说明它压根没听懂 —— 那是该丢的，
+# 不是该问的。问"要调亮还是调暗？"只是把一次失败包装成一次对话。
+_ASKABLE = {
+    ("light", "brightness"): ("pct", "亮度调到多少？"),
+    ("light", "color_temp"): ("kelvin", "色温要多少？"),
+    ("tivoli", "preset_recall"): ("preset", "第几个台？"),
+    ("tivoli", "preset_save"): ("preset", "存到第几个？"),
+    ("music", "play"): ("query", "想听什么？"),
+    ("aircon", "set_temp"): ("temp", "空调调到多少度？"),
+}
+
+
+def _validated_slots(data: dict, domain: str, action: str,
+                     raw: str = "") -> tuple[dict | None, str]:
+    """校验模型给的槽位。返回 (槽位, 缺的那个键)。
+
+    三种结果要分得开，因为**该做的事不一样**：
+        ({...}, "")      拿到了，去执行
+        (None,  "temp")  该给的没给 -> 问回去（调用方决定问不问）
+        (None,  "")      给了但不合法/编的 -> 丢掉，这是幻觉信号
+
+    原来这里只有"要么槽位要么 None"，于是缺参和乱编走同一条路，
+    最后都变成一句「这个我还不会」—— 而那句话在缺参时是**假的**：
+    我们明明知道他在说空调、要设温度，只是不知道设到几度。
+
+    三道关的**顺序是有讲究的**，排错了会把"乱编"也变成"问回去"：
+        1. 没给      -> 问（我们知道他要干什么）
+        2. 类型/范围 -> 丢（pct=101、pct="30" 是模型在胡说，问也问不出个所以然）
+        3. 原话依据  -> 问（值本身合法，但用户压根没说过这个数）
+    """
+    slots: dict = {}
+    askable = _ASKABLE.get((domain, action))
+
+    def _ask_for(key: str) -> tuple[None, str]:
+        """能问的才回 key；不能问的（比如 step）回空串 = 丢掉。"""
+        return None, (key if askable and askable[0] == key else "")
+
     for key in _ACTION_SLOTS.get((domain, action), ()):
         value = data.get(key)
         if value is None:
             if action == "on":       # on 的参数可选；其余动作必须给齐
                 continue
-            return None
+            return _ask_for(key)
+
+        # --- 第 2 关：类型和范围。不合法就是幻觉，丢掉，不问 ---
         if key == "query":
             if not isinstance(value, str) or not value.strip() or len(value) > 200:
-                return None
+                return None, ""
             slots[key] = value.strip()
             continue
-        if type(value) is not int:
-            return None
+        if type(value) is not int:   # bool 在 Python 里也是 int，得用 type 不能用 isinstance
+            return None, ""
         if key == "step":
             limit = {"light": 100, "tivoli": 10, "aircon": 13}[domain]
             if value == 0 or not -limit <= value <= limit:
-                return None
-        else:
-            low, high = _SLOT_LIMITS[key]
-            if not low <= value <= high:
-                return None
+                return None, ""
+            slots[key] = value
+            continue
+        low, high = _SLOT_LIMITS[key]
+        if not low <= value <= high:
+            return None, ""
+
+        # --- 第 3 关：合法，但用户说过吗 ---
+        ev = _SLOT_EVIDENCE.get(key)
+        if ev and not ev.search(raw or ""):
+            _LOG.info("LLM 给 %s.%s 填了 %s=%r，但原话里没提，不采信",
+                      domain, action, key, value)
+            if action == "on":
+                continue             # 可选槽，丢槽位不丢动作：「开灯」本身是对的
+            return _ask_for(key)
+
         slots[key] = value
-    return slots
+    return slots, ""
 
 
 class LocalLLM:
@@ -284,12 +387,23 @@ class LocalLLM:
                 if domain != "none":
                     _LOG.info("LLM 编了个不存在的动作 %s.%s，丢掉", domain, action)
                 return None
+            if _corroborated(text, domain) and not _corroborated(text, home):
+                # 原话只佐证了它说的那个域，那幻觉的就是动作。按动作修回来会把
+                # 指令发到另一台设备上（「这首太吵了」-> 去调台灯亮度），宁可不做。
+                _LOG.info("LLM 答 %s.%s，原话里只有 %s 的设备词、没有 %s 的 —— "
+                          "错的是动作不是域，丢掉而不是改域", domain, action, domain, home)
+                return None
             _LOG.info("LLM 把域说成了 %s，但 %s 只有 %s 有 —— 按动作修回来",
                       domain, action, home)
             domain = home
-        slots = _validated_slots(data, domain, action)
+        slots, missing = _validated_slots(data, domain, action, text)
         if slots is None:
-            _LOG.info("LLM %s.%s 参数缺失或无效，放弃该结果", domain, action)
+            if missing:
+                _LOG.info("LLM %s.%s 缺 %s，交给上层问回去", domain, action, missing)
+                return {"domain": domain, "action": action, "slots": {},
+                        "missing": missing, "ask": _ASKABLE[(domain, action)][1],
+                        "reply": str(data.get("reply", ""))[:24]}
+            _LOG.info("LLM %s.%s 参数无效，放弃该结果", domain, action)
             return None
         return {"domain": domain, "action": action, "slots": slots,
                 "reply": str(data.get("reply", ""))[:24]}
