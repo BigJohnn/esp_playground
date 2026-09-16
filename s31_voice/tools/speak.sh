@@ -27,6 +27,21 @@ while [ $i -lt ${#args[@]} ]; do
     if [[ "$a" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
         ffmpeg -hide_banner -loglevel error -f lavfi -i "anullsrc=r=16000:cl=mono" \
                -t "$a" -c:a pcm_s16le "$TMP/$i.wav"
+    elif [ -n "${SPEAK_SAY_VOICE:-}" ]; then
+        # 用 macOS 自带的中文合成当**第二个激励源**。
+        #
+        # 起因：2026-09-16 用户听出「开灯」被念成了"开4灯4"。量了基频，
+        # Kokoro 把短句**末音节压了 8 个半音**（开灯/关灯 的「灯」本该是平调的
+        # 一声），单字对照更露馅 —— 「妈」一声测出 -2.9、「骂」四声第一段反而 +3.4。
+        # 也就是说 mn_regress 给短词的激励**本身声调就是错的**，
+        # 而词表注释里"每条至少 3 个音节"那条规律，正是从这些短词的失败里总结的。
+        # 测试工具错了比被测物错更危险 —— 错的是你用来判断对错的那把尺子。
+        #
+        # 不替换 Kokoro，而是并列：一条词该在两个声音下都过，
+        # 毕竟板子最终要听的是人，不是某一个 TTS。
+        say -v "$SPEAK_SAY_VOICE" -o "$TMP/$i.aiff" "$a"
+        ffmpeg -hide_banner -loglevel error -y -i "$TMP/$i.aiff" \
+               -ar 16000 -ac 1 -c:a pcm_s16le "$TMP/$i.wav"
     else
         curl -sf -m 60 -X POST "$SERVER/tts" "${CURL_AUTH[@]}" -H 'Content-Type: application/json' \
              -d "$(printf '{"text":"%s"}' "$a")" -o "$TMP/$i.wav"
