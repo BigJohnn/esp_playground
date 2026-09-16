@@ -432,6 +432,10 @@ STT 转得没毛病。
 权重 312MB，走 ModelScope 拉（实测 9.8MB/s，HuggingFace 和它的镜像都只有 0.4MB/s）：
 `tools/fetch_tts_model.sh`。
 
+2026-09-16 对 sanoTTS 的选型评估：**当前保留 Kokoro，优先缓存常用回话，sanoTTS 作为候选后端验证**。
+337KB 英文模型、中文小雅和 S3 的实时成绩不能视为同一配置，S31 也不能直接套用 S3 的 SIMD 结果。
+详见 [sanoTTS 适用性评估](docs/sanotts-evaluation.md)（代码与资料核查，尚未实测候选引擎）。
+
 ## 4.1.6 延迟拆解：慢在哪儿，之前只能猜
 
 之前每条路径只有一个端到端毫秒数。兜底实测在 1.2–3.9s 之间飘，
