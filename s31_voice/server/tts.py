@@ -51,6 +51,34 @@ def _resample_linear(x: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
     return np.interp(idx, np.arange(x.size), x).astype(np.float32)
 
 
+# 句末没有标点的短句，补一个句号再送进合成。
+#
+# 起因（2026-09-16）：用户听出板子把「灯开了」念成"灯1开4了"。查下来不是注音
+# 的错（misaki 给的是对的一声），是**声学模型给整句施加了陈述句的降调，而回话
+# 太短，整句都落在那条下降的斜坡上，词汇声调被盖掉**。
+#
+# 实测（把合成音送回 SenseVoice，比带调拼音，同音字不算错，每条 4 次）：
+#     回话            原样    补句号
+#     灯开了          4/4     4/4
+#     灯关了          3/4     4/4      guan1 被念成 guan4
+#     收音机开了       0/4     3/4      shou1 yin1 ji1 -> shou4 yin4 ji4
+#     已调到最暗       2/4     2/4      仍然不行，只能改写措辞
+#
+# 为什么是句号而不是别的：标点**不会被念出来**，用户听到的内容一个字不变，
+# 合成耗时也没变（241ms）。试过的其它办法都更差：
+#   - 换声音：10 个 z* 音色全试了，没有一个四条全对
+#   - 加后缀「，好了」再把后缀切掉：韵律确实修好了（4/4），但切不干净 ——
+#     逗号那个停顿在输出里不够静，能量切割器切进词里，切完 0/4
+#   - 换 macOS `say`：四条全 5/5，但合成从 241ms 涨到 946ms，
+#     而回话在交互关键路径上，不值当
+_END_PUNCT = "。！？，、.!?,;:；："
+
+
+def _terminate(text: str) -> str:
+    t = text.strip()
+    return t if not t or t[-1] in _END_PUNCT else t + "。"
+
+
 class KokoroTTS:
     def __init__(self) -> None:
         self._pipeline = None
@@ -95,7 +123,8 @@ class KokoroTTS:
 
         chunks = []
         v = _voice_ref(voice or CONFIG.tts_voice)
-        for _gs, _ps, audio in self._pipeline(text, voice=v, speed=CONFIG.tts_speed):
+        for _gs, _ps, audio in self._pipeline(_terminate(text), voice=v,
+                                              speed=CONFIG.tts_speed):
             chunks.append(np.asarray(audio, dtype=np.float32).reshape(-1))
         if not chunks:
             return np.zeros(0, dtype=np.float32), sample_rate

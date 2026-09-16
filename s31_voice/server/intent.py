@@ -478,7 +478,10 @@ _BUILD: dict[str, Callable[[re.Match[str], str, str], Intent | None]] = {
     "ac_status":    _simple("aircon", "status", ""),
     # light
     "max":      _light("brightness", "已调到最亮", brightness_pct=100),
-    "min":      _light("brightness", "已调到最暗", brightness_pct=1),
+    # 不写「已调到最暗」：句末的 an4 会被 Kokoro 念成 an1，实测 0/4 念对
+    # （听成"已调到最安"），而补句号那招对它无效 —— 见 tts.py 的 _terminate。
+    # 「已经最暗了」把 an4 挪离句末，实测 4/4，而且更像人话。
+    "min":      _light("brightness", "已经最暗了", brightness_pct=1),
     "brighter": _light("brightness_step", "调亮了", brightness_step_pct=20),
     "dimmer":   _light("brightness_step", "调暗了", brightness_step_pct=-20),
     "half":     _light("brightness", "亮度调到一半", brightness_pct=50),
@@ -806,6 +809,36 @@ _MULTINET_CANDIDATES: list[tuple[str, str | None]] = [
 # 只是慢一秒左右。而且词表容量是零和的，空出这一格让剩下四条都好过一点。
 
 
+# 声学替换实验用：临时把**发给板子的**词表整个换掉，不动上面那张正式表。
+#
+#     MULTINET_TABLE="开灯,关灯" ./run.sh
+#     MULTINET_TABLE="开灯|kai deng,关灯" ./run.sh     # 竖线后面是手写注音
+#
+# 为什么要这个而不是直接改上面那张表：§4.1.18 说加词只能**替换**不能追加，
+# 于是每次验一对新词都要动正式表再改回来 —— 而"改回来"这一步是会漏的
+# （M21 那次就把实验配置留在了 sdkconfig 里）。让实验走环境变量，
+# 正式表在 git 里永远是干净的那一份。
+#
+# 只影响发给板子的离线快路。规则层不受影响：没命中的整句照常走服务端 ASR，
+# 意图层认得的词一条都不会少。
+def _parse_table_override(raw: str) -> list[tuple[str, str | None]]:
+    out: list[tuple[str, str | None]] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        text, _, phon = item.partition("|")
+        out.append((text.strip(), phon.strip() or None))
+    return out
+
+
+_TABLE_OVERRIDE = _parse_table_override(os.environ.get("MULTINET_TABLE", ""))
+# MULTINET_EXTRA 是**追加**（正式表 + 这几条），MULTINET_TABLE 是**整个替换**。
+# 追加违反 §4.1.18 的"加词只能替换"，所以它只用来做干扰实验、不用来上线：
+# 想知道新词会不会把老词吃掉，两边必须同时在表里。
+_TABLE_EXTRA = _parse_table_override(os.environ.get("MULTINET_EXTRA", ""))
+
+
 def _auto_phonemes(text: str) -> str:
     import pinyin_fix
     from pypinyin import Style, lazy_pinyin
@@ -822,9 +855,16 @@ def commands_for_multinet() -> list[dict]:
     例如 "打开台灯" -> "da kai tai deng"。这里直接复用意图解析已有的拼音层，
     保证"板上离线识别"和"服务端 ASR"两条路用的是同一份词表、同一套拼音规则。
     """
-    table = list(_MULTINET_COMMANDS)
-    if os.environ.get("MULTINET_INCLUDE_CANDIDATES", "").strip() in ("1", "true", "yes"):
-        table += _MULTINET_CANDIDATES
+    if _TABLE_OVERRIDE:
+        table = _TABLE_OVERRIDE
+    else:
+        table = list(_MULTINET_COMMANDS)
+        if os.environ.get("MULTINET_INCLUDE_CANDIDATES", "").strip() in ("1", "true", "yes"):
+            table += _MULTINET_CANDIDATES
+    if _TABLE_EXTRA:
+        # 在正式表**之后**追加。验干扰用：候选词和它可能撞上的老词必须同时在表里，
+        # 单独验候选词测不出"新词会不会把老词吃掉"。
+        table = table + [x for x in _TABLE_EXTRA if x[0] not in {t for t, _ in table}]
     return [
         {"id": i, "text": text, "phonemes": override or _auto_phonemes(text)}
         for i, (text, override) in enumerate(table)
