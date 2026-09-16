@@ -283,7 +283,20 @@ class MusicExecutor:
         if await self.air.linked():
             return True, ""
         if not await self.air.reachable():
-            return False, "音响不在线，先打开它"
+            # 探不到**不等于关着**。这是 M20 那条教训（README §4.1.25）在另一个
+            # 执行器里没还的同一笔账：reachable() 只说明"在我被告知的那个地址上
+            # 没找到它"，而地址本身就可能是错的。
+            #
+            # 2026-09-16 实测：Tivoli 被 DHCP 从 .107 挪到了 .108，而 .107 上
+            # 住进了别的设备 —— ping 通、:7000 连接被拒。于是"地址过期了"被报成
+            # "音响没开"，用户看着亮着的音响听系统说它不在线。
+            # 骗人的不是探测，是那句把"不知道"说成"我知道"的回话。
+            #
+            # 配置因此改成 mDNS 名（AIRPLAY_HOST=audiocast.local），它不随租约漂 ——
+            # discovery.py 开头为板子写过同一段道理，只是 AirPlay 这头一直漏着。
+            _LOG.warning("AirPlay 探测不到 %s —— 可能没开机，也可能这个地址已经不是它了",
+                         self.air.host or "(没配地址)")
+            return False, "连不上音响，可能没开，也可能是地址变了"
         _LOG.info("AirPlay 链路断了（多半是刚才切过源），重新挂上去……")
         if await self.air.relink():
             return True, ""
