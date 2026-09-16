@@ -14,11 +14,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 
 from config import CONFIG
 from ha import HomeAssistant
 import intent as intent_mod
+# 只为取 _SLOT_LIMITS：补答的值也得过同一套范围检查，
+# 否则"问回去"这条路会绕开 LLM 那条路上已有的护栏。范围只该有一个出处。
+import llm as llm_mod
 from context import Context, Question
 from intent import Intent
 
@@ -275,7 +279,8 @@ class Router:
         # 有问题悬着的话，先按"这是在回答"试一次。**必须在意图解析之前** ——
         # 「第二个」在普通意图里什么都不是，走到 LLM 那层还可能被瞎猜成别的。
         # answer() 认不出来会还回 None，那时候再原样往下走，一个字都不会被吞掉。
-        answered = await self._answer_slot(text) or await self._answer_domain(text)
+        answered = (await self._answer_param(text) or await self._answer_slot(text)
+                    or await self._answer_domain(text))
         if answered is not None:
             return answered
 
@@ -326,6 +331,10 @@ class Router:
                           "没中" if parsed.domain == "none" else "没把握",
                           parsed.rule or "-", parsed.confidence,
                           guess["domain"], guess["action"])
+                if guess.get("missing"):
+                    # 设备和动作都定下来了，就差一个值。问一句，
+                    # 别退回"这个我还不会"——那句话在这里是假的。
+                    return self._ask_param(text, guess)
                 slots = guess.get("slots") or {}
                 light_slots = ({
                     "brightness_pct": slots.get("pct"),
@@ -383,6 +392,87 @@ class Router:
         _LOG.info("只听到设备名「%s」，反问要干什么（多半是句子被切断了）", device)
         return Intent(domain="none", action="ask", slots={"device": device},
                       reply=q.text, raw=text, rule="ask_slot"), True, q.text
+
+    # 用户想撤回的说法。任何一个悬着的问题听到这些就该散场，
+    # 否则下一句无关的话会被当成答案喂进去。
+    _CANCEL = ("算了", "不用了", "取消", "没事", "不要了", "别了")
+
+    def _ask_param(self, text: str, guess: dict) -> tuple[Intent, bool, str]:
+        """设备和动作都有了，缺一个值 —— 问那个值。
+
+        和 _ask_slot 的区别：那个是"知道设备不知道要干嘛"，这个是
+        "知道要干嘛不知道干到什么程度"。两者的答案形态也不同 ——
+        那边补的是半句话，能重新走 parse()；这边补的是一个**裸值**
+        （「26度」「第三个」），parse() 解不出来（实测过），所以要单独接。
+        """
+        domain, action = guess["domain"], guess["action"]
+        q = Question(kind="param",
+                     options=[{"domain": domain, "action": action,
+                               "key": guess["missing"], "pending_text": text}],
+                     text=guess["ask"], deadline=time.time() + _QUESTION_TTL)
+        self.ctx.question = q
+        self.ctx.record(text, domain, action, False, q.text)
+        _LOG.info("「%s」判成 %s.%s，缺 %s，反问「%s」",
+                  text, domain, action, guess["missing"], q.text)
+        return Intent(domain="none", action="ask", slots={"missing": guess["missing"]},
+                      reply=q.text, raw=text, rule="ask_param"), True, q.text
+
+    @staticmethod
+    def _value_in(text: str, key: str) -> int | str | None:
+        """从补的这一句里取出那个裸值。取不到还回 None。"""
+        if key == "query":
+            q = text.strip().strip("。，,.!?！？")
+            return q or None
+        # 阿拉伯数字优先；没有就试中文数词（_cn_number 认得"二十六"「一百」）
+        m = re.search(r"[0-9]+", text)
+        if m:
+            return int(m.group())
+        m = re.search(r"[零一二两三四五六七八九十百]+", text)
+        return intent_mod._cn_number(m.group()) if m else None
+
+    async def _answer_param(self, text: str) -> tuple[Intent, bool, str] | None:
+        """把这一句当成"那个值是多少"的回答。不是就还回 None。"""
+        q = self.ctx.question
+        if q is None or q.kind != "param" or q.expired:
+            return None
+        opt = q.options[0]
+        domain, action, key = opt["domain"], opt["action"], opt["key"]
+
+        if any(w in text for w in self._CANCEL):
+            self.ctx.question = None
+            self.ctx.record(text, "none", "cancel", True, "好")
+            return Intent(domain="none", action="none", reply="好",
+                          raw=text, rule="cancel"), True, "好"
+
+        value = self._value_in(text, key)
+        if value is None:
+            # 答非所问。**别把问题留着** —— 和 _answer_slot 同一个道理：
+            # 留着的话用户下一句说别的会被这个焦点带偏。
+            self.ctx.question = None
+            return None
+        if key != "query":
+            low, high = llm_mod._SLOT_LIMITS[key]
+            if not low <= value <= high:
+                self.ctx.question = None
+                reply = f"{low} 到 {high} 之间才行"
+                self.ctx.record(text, domain, action, False, reply)
+                return Intent(domain="none", action="none", reply=reply,
+                              raw=text, rule="param_out_of_range"), False, reply
+
+        self.ctx.question = None
+        slots = {key: value}
+        light_slots = ({"brightness_pct": slots.get("pct"),
+                        "color_temp_kelvin": slots.get("kelvin")}
+                       if domain == "light" else {})
+        parsed = Intent(domain=domain, action=action, **light_slots, slots=slots,
+                        raw=opt.get("pending_text") or text, rule="answer_param",
+                        confidence=0.6)
+        _LOG.info("补上 %s=%r，执行 %s.%s", key, value, domain, action)
+        ok, reply = await self.execute(parsed)
+        self.ctx.record(text, domain, action, ok, reply)
+        if ok:
+            self._note_effect(parsed)
+        return parsed, ok, reply
 
     async def _answer_slot(self, text: str) -> tuple[Intent, bool, str] | None:
         """把这一句当成"那台设备要怎么样"的回答。
