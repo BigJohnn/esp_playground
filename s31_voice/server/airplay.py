@@ -74,6 +74,9 @@ class AirPlay:
         self._play: asyncio.subprocess.Process | None = None
         self._duck_task: asyncio.Task | None = None
         self._duck_from: float | None = None
+        # 我**实际压下去**的那个档位。恢复前要拿它和当前值比一比：
+        # 对不上就说明压制期间有别人写过音量，那时候不能恢复。见 _unduck_after。
+        self._ducked_to: float | None = None
         # 压制前的音量**落盘**。见 duck() 里那段说明：它守护的是一个
         # 活得比进程久的副作用（系统音量），只存在内存里是不够的。
         self._duck_file = os.path.join(tempfile.gettempdir(), "s31_duck_from")
@@ -265,9 +268,20 @@ class AirPlay:
             if self._duck_from != cur:
                 _LOG.info("当前音量 %.0f 看着像是上次没恢复的压制值，按 %.0f 记原始音量",
                           cur, self._duck_from)
+        if cur <= level:
+            # 本来就比压制档位还低 —— 没有什么可压的，也就**没有什么可恢复的**。
+            #
+            # 原来这里照样排一个恢复任务，于是用户把音量设到 1 之后，
+            # 只要说一句唤醒词（哪怕不下任何命令），8 秒后音量就被抬到 13：
+            # _duck_from 取的是 max(cur, level+1) = 13，那个 max 本意是防止
+            # 把"压制档位"误记成原始值，但用户真想要低于压制档的音量时它反咬一口。
+            # 实测复现过，见 docs/architecture.md §6.6。
+            self._duck_from = None
+            self._remember_duck_from(None)
+            return
         self._remember_duck_from(self._duck_from)
-        if cur > level:
-            await self.set_volume(level)
+        await self.set_volume(level)
+        self._ducked_to = level
         self._duck_task = asyncio.create_task(self._unduck_after(seconds))
 
     def _remember_duck_from(self, value: float | None) -> None:
@@ -307,15 +321,45 @@ class AirPlay:
         await self.set_volume(saved)
         self._remember_duck_from(None)
 
+    # 恢复前比对当前值时允许的偏差。实测 macOS 的 set/get 是精确的
+    # （1/5/12/13/35/40/55 设进去读回来一个不差），留 1 只是防四舍五入。
+    _VOLUME_EPS = 1.0
+
     async def _unduck_after(self, seconds: float) -> None:
+        """压制窗口结束，把音量放回去 —— **但要先确认没人插过手**。
+
+        这里是整个压音量机制唯一可能覆盖用户意图的地方，所以判据要说清楚：
+
+        `_duck_from` 不是一个关于世界的事实，而是一个**预测** ——
+        "这 8 秒里不会有别人写系统音量"。用户在窗口里说「音量调到1」，
+        或者有人伸手拧了实体旋钮，这个预测就作废了。
+        **拿一个作废的预测去覆盖一个更新的、真实的用户意图，是纯粹的丢失更新。**
+
+        所以恢复是 compare-and-swap：只有当前值还是我压下去的那个档位时，
+        才说明这段时间没人动过，才轮得到我放回去。
+        用显式的"用户改音量时取消恢复任务"也能治 A 类情况，但治不了实体遥控器
+        那种绕过我们的写入 —— 而 AirPlay 会把设备音量同步回系统音量，
+        那条路是真实存在的。比对当前值则两种都管。
+        """
         try:
             await asyncio.sleep(seconds)
         except asyncio.CancelledError:
             return
-        if self._duck_from is not None:
-            await self.set_volume(self._duck_from)
+        if self._duck_from is None:
+            return
+        now = await self.volume()
+        if (now is not None and self._ducked_to is not None
+                and abs(now - self._ducked_to) > self._VOLUME_EPS):
+            _LOG.info("压制期间音量被改成了 %.0f（不是我压下去的 %.0f），"
+                      "放弃恢复 —— 那是比我手里这个更新的用户意图", now, self._ducked_to)
             self._duck_from = None
+            self._ducked_to = None
             self._remember_duck_from(None)
+            return
+        await self.set_volume(self._duck_from)
+        self._duck_from = None
+        self._ducked_to = None
+        self._remember_duck_from(None)
 
     async def set_volume(self, pct: float) -> bool:
         pct = max(0.0, min(100.0, float(pct)))
