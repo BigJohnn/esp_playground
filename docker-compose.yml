@@ -1,3 +1,20 @@
+# 语音链路（SenseVoice / Kokoro / Qwen3）和这两个容器**跑在同一台 10 核机器上**，
+# 而语音那条链是有延迟预算的：STT 基线 ~800ms，控灯总预算 300ms。
+# 所以这里给容器加 CPU 硬上限 —— 这不是调优，是**隔离**。
+#
+# 起因（2026-09-17）：esphome 容器空转 **204% CPU、734MB、连续 10 天**，
+# 把 STT 从 800ms 拖到 2144ms，最坏一次 10616ms。没编译、没磁盘写入、
+# 日志里只有 HA 每 30 秒一次的健康检查 —— 也就是说**从日志完全看不出来**。
+# 而 restart: unless-stopped 只管进程崩没崩，**空转不算崩**，于是它就那么转了十天。
+# 重启后立刻回到 0.26% / 25MB，STT 回到 676ms。分析见 s31_voice/docs/architecture.md §6.7。
+#
+# 为什么是 cpus（硬上限）而不是 cpu_shares（相对权重）：
+# cpu_shares 调的是 Docker VM **内部** cgroup 之间的比例，而我们要挡的是
+# 整个 Docker VM 向 macOS 要 CPU —— 争用发生在 VM 和原生 Python 进程之间，
+# 在 VM 外面，cpu_shares 够不着。只有硬上限管得住。
+#
+# 代价说清楚：esphome 编译固件时会慢一些。这笔交易是划算的 ——
+# 编译是低频的、你在旁边看着的；空转是高频的、没人看得见的。
 services:
   esphome:
     build:
@@ -20,6 +37,10 @@ services:
       - TZ=Asia/Shanghai
       - SHELL=/bin/bash
     restart: unless-stopped
+    # 10 核里最多给 2 核。编译固件时够用（慢一点），空转时也封顶在 2 核，
+    # 不会像这次一样把语音链路一起拖垮。
+    cpus: 2.0
+    mem_limit: 2g
     privileged: true
     # network_mode: host
     ports: 
@@ -45,6 +66,10 @@ services:
       - TZ=Asia/Shanghai
       - SHELL=/bin/bash
     restart: unless-stopped
+    # HA 常态只占 0.01~1.5%、386MB。给 1.5 核 / 1.5G 是留足余量的，
+    # 真撞上限说明它出事了 —— 那时候封顶比拖垮语音链路强。
+    cpus: 1.5
+    mem_limit: 1536m
     privileged: true
     # network_mode: host
     ports: 
