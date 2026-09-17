@@ -260,6 +260,26 @@ class TivoliExecutor:
             return True, ("往上挪了一格，遥控器上没有搜台键，只能微调"
                           if step > 0 else "往下挪了一格")
 
+        if a == "set_volume":
+            # 绝对音量**只能走网络**，不能走红外。
+            #
+            # 红外的 VOL± 是相对的、开环的：我们既读不到设备当前在哪一格，
+            # 也收不到任何回执。"把音量设成 10" 这种绝对目标，在一条没有回执的
+            # 链路上根本无法表达 —— 硬按几下只是在赌。这条底线见 README §4.1.25：
+            # **没有回执的链路，不能把"命令发出去了"当成"事情做成了"。**
+            #
+            # AirPlay 挂着的时候就不一样了：系统音量和设备音量是同一个旋钮
+            # （实测发 3 下红外 VOL-，macOS 系统音量跟着从 18 掉到 12），
+            # 读回来的值是真的，设进去也立刻生效。
+            pct = intent.slots.get("pct")
+            if pct is None:
+                return False, "音量要设成多少"
+            if not await self.air.linked():
+                return False, "音响没连上网络，只能说大一点小一点"
+            if not await self.air.set_volume(float(pct)):
+                return False, "音量没设成"
+            return True, f"音量{int(pct)}"
+
         if a == "volume_step":
             step = int(intent.slots.get("step", 1))
             # AirPlay 链路在的时候走网络，不走红外。两个理由：

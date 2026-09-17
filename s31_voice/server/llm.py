@@ -106,7 +106,7 @@ _CLASSIFY_PROMPT = """把用户这句话归到下面某一条动作上。
 
 action 只能从下面这些词里原样挑一个，不许改写、不许加括号：
 light   on  off  brightness  brightness_step  color_temp
-tivoli  power_on  power_off  radio_on  preset_recall  preset_save  station_step  volume_step  mute
+tivoli  power_on  power_off  radio_on  preset_recall  preset_save  station_step  volume_step  set_volume  mute
 music   play  play_favorites  next  prev  pause  resume  stop  now_playing
 aircon  on  off  set_temp  temp_step  status
 none    none
@@ -136,7 +136,7 @@ _KEYWORDS_PROMPT = """用户想听歌，但没说具体歌名。把这句话变�
 _ALLOWED = {
     "light": {"on", "off", "toggle", "brightness", "brightness_step", "color_temp"},
     "tivoli": {"power_on", "power_off", "radio_on", "preset_recall", "preset_save",
-               "station_step", "volume_step", "mute"},
+               "station_step", "volume_step", "set_volume", "mute"},
     "music": {"play", "play_favorites", "next", "prev", "pause", "resume", "stop",
               "now_playing"},
     "aircon": {"on", "off", "set_temp", "temp_step", "status"},
@@ -209,6 +209,7 @@ _ACTION_SLOTS = {
     ("light", "color_temp"): ("kelvin",),
     ("tivoli", "preset_recall"): ("preset",),
     ("tivoli", "preset_save"): ("preset",),
+    ("tivoli", "set_volume"): ("pct",),
     ("tivoli", "volume_step"): ("step",),
     ("tivoli", "station_step"): ("step",),
     ("music", "play"): ("query",),
@@ -227,6 +228,7 @@ _ACTION_SLOTS = {
 _ASKABLE = {
     ("light", "brightness"): ("pct", "亮度调到多少？"),
     ("light", "color_temp"): ("kelvin", "色温要多少？"),
+    ("tivoli", "set_volume"): ("pct", "音量设成多少？"),
     ("tivoli", "preset_recall"): ("preset", "第几个台？"),
     ("tivoli", "preset_save"): ("preset", "存到第几个？"),
     ("music", "play"): ("query", "想听什么？"),

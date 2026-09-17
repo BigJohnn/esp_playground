@@ -164,6 +164,28 @@ _PCT_RE = re.compile(
     r"|(?:调|设|开|降|升)到\s*(?:百分之)?\s*([0-9]+|[一二两三四五六七八九十百]+)(?!半)\s*(?:%|％)?"
 )
 
+# 绝对音量：「音量调到1」「把声音调到10」「音量百分之十」。
+#
+# **必须带「音量」或「声音」这本护照**，和 ac_set_temp 要求带「空调」是同一个道理：
+# 裸的「调到10」会被灯的 set_pct 抢走。2026-09-16 实测就是这么错的 ——
+# 「音量调到1」解析成 light.brightness，去调了台灯亮度，
+# 而用户看到的是"音量没反应"，报上来是"被无视了"。
+#
+# 数字和护照的两种语序都要收：「音量调到10」/「调到10的音量」不常见，
+# 但「把声音开到20」「声音设成5」都是人话。
+# 数字前**必须有显式锚点**（调到/设成/到/百分之），不能只看"音量 + 数字"。
+# 第一版就是只看数字，于是「声音大一点」里的「一」被抓成 pct=1 ——
+# 和 _PCT_RE 注释里警告的「调到一半」是同一个陷阱，我又踩了一遍。
+# 相对档（大一点/小一点/调高/调低）必须继续落到 volume_up/down 上。
+_VOLUME_WORD = r"(?:音量|声音)"
+_VOL_ANCHOR = r"(?:(?:调|设|开|降|升)(?:到|成)|到|百分之)"
+_VOL_SET_RE = re.compile(
+    _VOLUME_WORD + r".{0,3}?" + _VOL_ANCHOR
+    + r"\s*(?:百分之)?\s*([0-9]+|[一二两三四五六七八九十百]+)(?!半)\s*(?:%|％|档|格)?"
+    r"|" + _VOL_ANCHOR + r"\s*(?:百分之)?\s*([0-9]+|[一二两三四五六七八九十百]+)"
+    r"\s*(?:%|％)?\s*的?" + _VOLUME_WORD
+)
+
 # 预设序号：中文或阿拉伯，1-6
 _N = r"([一二两三四五六1-6])"
 
@@ -196,6 +218,10 @@ _RULES: list[tuple[str, Domain, re.Pattern[str]]] = [
     # 用户说的是「声音低一点」，结果被空调的降温规则抢走了。
     # 两种语序都要认：「音量调低」和「调低音量」。中文里动词前置很常见，
     # 只写一种的代价是另一种整句掉进服务端 ASR 兜底 —— 而兜底在有音乐时基本废掉。
+    # 绝对音量排在 volume_up/down **之前**：「音量调到1」里也有"音量"两个字，
+    # 先让相对档的规则看见的话，它不会命中（没有大/小/高/低），但顺序写清楚更稳。
+    # 关键是它必须排在灯的 set_pct 之前 —— 那条只看数字不看设备。
+    ("set_volume", "tivoli", _VOL_SET_RE),
     ("volume_up", "tivoli", re.compile(
         r"(?:声音|音量)(?:调)?[大高]|(?:调|开)?[大高](?:一)?点?(?:声音|音量)"
         r"|大点声|大声(?:一)?点|太小声|听不(?:太)?清")),
@@ -366,6 +392,15 @@ def _b_ac_on(m, raw, rule):
     return Intent("aircon", "on", slots={"mode": mode}, raw=raw, rule=rule)
 
 
+def _b_set_volume(m, raw, rule):
+    n = next((g for g in m.groups() if g), None)
+    pct = _cn_number(n) if n else None
+    if pct is None or not 0 <= pct <= 100:
+        return None          # 抽不出合法数字就当没匹配上，让后面的规则去试
+    return Intent("tivoli", "set_volume", slots={"pct": pct}, raw=raw, rule=rule,
+                  reply=f"音量{pct}")
+
+
 def _b_pct(m, raw, rule):
     group = next((g for g in m.groups() if g), None)
     pct = _cn_number(group)
@@ -485,6 +520,7 @@ _BUILD: dict[str, Callable[[re.Match[str], str, str], Intent | None]] = {
     "brighter": _light("brightness_step", "调亮了", brightness_step_pct=20),
     "dimmer":   _light("brightness_step", "调暗了", brightness_step_pct=-20),
     "half":     _light("brightness", "亮度调到一半", brightness_pct=50),
+    "set_volume": _b_set_volume,
     "set_pct":  _b_pct,
     "warm":     _light("color_temp", "换成暖光", color_temp_kelvin=2700),
     "cool":     _light("color_temp", "换成冷光", color_temp_kelvin=6500),
