@@ -2,8 +2,13 @@
 
 运行：server/.venv/bin/python -m unittest discover -s server -p test_control_safety.py -v
 """
+import asyncio
+import os
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
+
+import airplay
 
 import intent
 from executor import LightExecutor, Router
@@ -282,6 +287,98 @@ class AskBackRoundTripTests(unittest.IsolatedAsyncioTestCase):
             parsed, ok, _ = await self.router.parse_and_execute("今天天气怎么样")
         self.assertIsNone(self.router.ctx.question)
         self.aircon.execute.assert_not_awaited()
+
+
+class VolumeOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    """音量只有一个旋钮，却有两个写者 —— 压音量机制和用户。
+
+    AirPlay 挂着时系统音量就是设备音量（tivoli.py 的 volume_step 注释里有实测），
+    而 /wake 的压音量也写它。两个写者一个共享快照，天然是丢失更新的形状。
+    """
+
+    def setUp(self):
+        self.air = airplay.AirPlay.__new__(airplay.AirPlay)
+        self.air._duck_task = None
+        self.air._duck_from = None
+        self.air._ducked_to = None
+        self.air._duck_file = os.path.join(tempfile.mkdtemp(), "duck")
+        self.level = 12.0
+        self.vol = 40.0
+        self.air.linked = AsyncMock(return_value=True)
+
+        async def _get():
+            return self.vol
+
+        async def _set(pct):
+            self.vol = float(pct)
+            return True
+
+        self.air.volume = _get
+        self.air.set_volume = _set
+
+    async def test_wake_never_raises_a_deliberately_quiet_system(self):
+        """用户把音量设成 1，此后只说唤醒词 —— 音量不许被抬起来。
+
+        改之前是抬到 13：_duck_from 取 max(cur, level+1)，而那次压制
+        其实一个分贝都没压（cur 已经低于档位），恢复任务却照排不误。
+        """
+        self.vol = 1.0
+        await self.air.duck(self.level, 0.05)
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.vol, 1.0)
+
+    async def test_user_volume_during_duck_survives(self):
+        """压制窗口里用户改了音量 —— 恢复不许覆盖它。
+
+        _duck_from 不是事实，是"这段时间没人插手"这个**预测**。
+        用户说了「音量调到1」，预测就作废了。
+        """
+        await self.air.duck(self.level, 0.05)
+        self.assertEqual(self.vol, self.level)      # 确实压下去了
+        self.vol = 1.0                              # 用户此刻说「音量调到1」
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.vol, 1.0)
+
+    async def test_untouched_duck_still_restores(self):
+        """没人插手时必须照旧恢复 —— 别为了修上面两条把压音量本身废掉。"""
+        await self.air.duck(self.level, 0.05)
+        self.assertEqual(self.vol, self.level)
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.vol, 40.0)
+
+
+class VolumeIntentTests(unittest.TestCase):
+    async def _noop(self):
+        pass
+
+    def test_absolute_volume_is_not_stolen_by_the_lamp(self):
+        """「音量调到1」改之前解析成 light.brightness，去调了台灯。
+
+        用户看到的是"音量没反应"，报上来是"被无视了" —— 而日志里一切正常。
+        和 README §4.1.24 的「空调调到26」被灯抢走是同一类。
+        """
+        for text, pct in [("音量调到1", 1), ("把音量调到10", 10), ("声音调到20", 20),
+                          ("音量百分之十", 10), ("声音设成5", 5)]:
+            with self.subTest(text=text):
+                i = intent.parse(text, ["tivoli", "music", "light", "aircon"])
+                self.assertEqual((i.domain, i.action), ("tivoli", "set_volume"))
+                self.assertEqual(i.slots.get("pct"), pct)
+                self.assertIsNone(i.brightness_pct)
+
+    def test_relative_volume_still_relative(self):
+        """数字锚点写宽了会把「声音大一点」里的「一」抓成 pct=1 —— 第一版就是这么错的。"""
+        for text, step in [("声音大一点", 3), ("声音小一点", -3), ("调低音量", -3)]:
+            with self.subTest(text=text):
+                i = intent.parse(text, ["tivoli", "music", "light", "aircon"])
+                self.assertEqual(i.action, "volume_step")
+                self.assertEqual(i.slots.get("step"), step)
+
+    def test_lamp_and_aircon_keep_their_numbers(self):
+        for text, dom in [("调到百分之八十", "light"), ("调到一半", "light"),
+                          ("空调调到26度", "aircon")]:
+            with self.subTest(text=text):
+                self.assertEqual(intent.parse(
+                    text, ["tivoli", "music", "light", "aircon"]).domain, dom)
 
 
 if __name__ == "__main__":
