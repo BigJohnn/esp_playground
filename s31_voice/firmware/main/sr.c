@@ -58,9 +58,28 @@ static model_iface_data_t *s_mn_data;
 static sr_event_cb_t s_cb;
 static void *s_ctx;
 
-/* 兜底录音。6 秒足够放下任何一句控灯的话（16k/16bit 单声道 = 192KB），
- * 放 PSRAM，内部 RAM 一个字节都不占。 */
-#define REC_MAX_SAMPLES  (6 * 16000)
+/* 兜底录音。放 PSRAM，内部 RAM 一个字节都不占。
+ *
+ * 原来是 6 秒，和 CONFIG_S31_COMMAND_TIMEOUT_MS 正好一样大 —— 于是窗口一到，
+ * 缓冲区也正好写满，句子被切断的时候连个溢出迹象都没有。
+ * 2026-09-16 实测：说「播放张震岳的爱的初体验」，服务端收到的是
+ * 「你好，小智播放爱的」，然后**真的放了一首叫《爱的》的歌**。
+ * 窗口要能跟着说话往后延（见 SPEECH_GRACE_MS），缓冲区就得跟着放大，
+ * 否则延长的那几秒会被下面 rec_len + n > REC_MAX_SAMPLES 那个 clamp 悄悄丢掉。
+ * 12 秒 = 384KB。 */
+#define REC_MAX_SAMPLES  (12 * 16000)
+
+/* 用户还在说话时，把收尾时限往后推这么多；以及无论如何都要收尾的硬上限。
+ *
+ * 为什么需要它：原来的时限是**从唤醒词那一刻**算起的固定 6 秒，于是
+ * "唤醒词和命令词之间停顿多久"直接从命令的预算里扣。实测那次开口前就用掉了
+ * 3.74 秒，留给一句 3 秒的话只剩 2.3 秒。日志里 `掐尾 0.00s` + `等到超时`
+ * 这对组合就是它的签名 —— VAD 从没判出"说完了"，是撞上时限被硬切的。
+ *
+ * 2000ms 的余量够 VAD 判完一次收尾：vadnet 有近 0.7s 迟滞，
+ * 加上 SILENCE_MS_TO_END_SHORT 的 900ms，还剩得下富余。 */
+#define SPEECH_GRACE_MS   2000
+#define MAX_LISTEN_MS    12000
 static int16_t *s_rec;
 static volatile bool s_rec_busy;      /* 上一段还在被消费者用着，别覆盖它 */
 static volatile bool s_muted;         /* 放 TTS 期间喂静音，见 sr_set_muted */
@@ -347,6 +366,8 @@ static void detect_task(void *arg)
 
     bool listening = false;
     int64_t listen_until = 0;
+    int64_t hard_until = 0;     /* 无论还在不在说话，到这儿必须收尾 */
+    bool mn_expired = false;    /* MultiNet 自己的超时到了（它和窗口是同一个 6s） */
     size_t rec_len = 0;         /* 采样数 */
     bool recording = false;     /* 这一轮是否真的在往 s_rec 里写 */
     /* 端点检测的状态机。关键在于不能直接拿 vad_state==SPEECH 当"用户开口了"：
@@ -375,6 +396,8 @@ static void detect_task(void *arg)
                 s_relisten_ms = 0;
                 listening = true;
                 listen_until = esp_timer_get_time() + (int64_t)again * 1000;
+                hard_until = esp_timer_get_time() + (int64_t)MAX_LISTEN_MS * 1000;
+                mn_expired = false;
                 rec_len = 0;
                 /* armed=true：这一轮前面没有唤醒词，也就没有尾音要等过去。
                  * 首轮那套"先等 VAD 落到 SILENCE"的逻辑在这儿反而会多等近一秒。 */
@@ -414,6 +437,8 @@ static void detect_task(void *arg)
             s_in_followup = false;
             listen_until = esp_timer_get_time() +
                            (int64_t)CONFIG_S31_COMMAND_TIMEOUT_MS * 1000;
+            hard_until = esp_timer_get_time() + (int64_t)MAX_LISTEN_MS * 1000;
+            mn_expired = false;
             rec_len = 0;
             armed = false;
             spoke = false;
@@ -483,8 +508,25 @@ static void detect_task(void *arg)
         int need_silence = (!s_in_followup && speech_ms < SHORT_SPEECH_MS)
                                ? silence_frames_short : silence_frames_to_end;
         bool spoke_and_stopped = spoke && silence_frames >= need_silence;
-        bool out_of_time = (st == ESP_MN_STATE_TIMEOUT) ||
-                           (esp_timer_get_time() > listen_until);
+        /* 还在说话的时候，谁都不许切断这句话。
+         *
+         * 两个超时源都要管：listen_until 是我们自己的，而 MultiNet 是用
+         * 同一个 CONFIG_S31_COMMAND_TIMEOUT_MS 创建的（见 s_mn->create），
+         * 它自己也会在 6 秒时报 TIMEOUT。只堵住一个，另一个照样把句子切掉。 */
+        bool still_speaking = spoke && !spoke_and_stopped;
+        if (still_speaking) {
+            int64_t want = esp_timer_get_time() + (int64_t)SPEECH_GRACE_MS * 1000;
+            if (want > listen_until) {
+                listen_until = want < hard_until ? want : hard_until;
+            }
+        }
+        if (st == ESP_MN_STATE_TIMEOUT) {
+            /* 记下来就行，不 clean —— 句子说到一半重启 MultiNet 会让它拿半句话
+             * 去匹配，反而可能撞出一条假命令。兜底路径不需要它。 */
+            mn_expired = true;
+        }
+        bool out_of_time = (esp_timer_get_time() > listen_until) ||
+                           (mn_expired && !still_speaking);
 
         if (st == ESP_MN_STATE_DETECTED) {
             esp_mn_results_t *r = s_mn->get_results(s_mn_data);
