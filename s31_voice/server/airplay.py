@@ -249,9 +249,29 @@ class AirPlay:
         cur = await self.volume()
         if cur is None:
             return
-        if self._duck_task is not None and not self._duck_task.done():
+        already_ducking = self._duck_task is not None and not self._duck_task.done()
+        if already_ducking:
+            # 重入：沿用**最早**那个原始音量，只把恢复的计时器往后推。
             self._duck_task.cancel()
         else:
+            if cur <= level:
+                # 没在压制中，而且音量本来就不高于档位 ——
+                # 没有什么可压的，也就没有什么可恢复的。**直接不参与**。
+                #
+                # 原来这里照样排一个恢复任务，于是用户把音量设到 1 之后，
+                # 只要说一句唤醒词（哪怕不下任何命令），8 秒后音量就被抬到 13：
+                # _duck_from 取 max(cur, level+1) = 13，那个 max 本意是防止把
+                # "压制档位"误记成原始值，但用户真想要低于压制档的音量时它反咬一口。
+                #
+                # **这个早退必须待在 else 分支里**。第一版写在外面，于是压制窗口内
+                # 的第二次唤醒会：先 cancel 掉恢复任务，再因为"音量已经是 12 了"
+                # 直接 return —— 恢复被吞掉且再没排上，系统音量永久停在 12。
+                # 实测踩过（2026-09-17，日志里连着刷"当前音量 12 看着像是
+                # 上次没恢复的压制值"）。见 §6.6。
+                self._duck_from = None
+                self._ducked_to = None
+                self._remember_duck_from(None)
+                return
             # 只有不在压制中时才记原始值。但"当前音量"这个来源本身会骗人 ——
             # 它已经被压过的话，我们就会把压低后的值当成原始值记下来，
             # 而且从此再也回不去了（实测：一晚上之后系统音量永久停在 12，
@@ -268,20 +288,12 @@ class AirPlay:
             if self._duck_from != cur:
                 _LOG.info("当前音量 %.0f 看着像是上次没恢复的压制值，按 %.0f 记原始音量",
                           cur, self._duck_from)
-        if cur <= level:
-            # 本来就比压制档位还低 —— 没有什么可压的，也就**没有什么可恢复的**。
-            #
-            # 原来这里照样排一个恢复任务，于是用户把音量设到 1 之后，
-            # 只要说一句唤醒词（哪怕不下任何命令），8 秒后音量就被抬到 13：
-            # _duck_from 取的是 max(cur, level+1) = 13，那个 max 本意是防止
-            # 把"压制档位"误记成原始值，但用户真想要低于压制档的音量时它反咬一口。
-            # 实测复现过，见 docs/architecture.md §6.6。
-            self._duck_from = None
-            self._remember_duck_from(None)
-            return
         self._remember_duck_from(self._duck_from)
-        await self.set_volume(level)
-        self._ducked_to = level
+        if cur > level:
+            # 只有真写下去了才更新 _ducked_to —— 恢复时要拿它和当前值比对，
+            # 记一个我们没写过的值会让那次比对失去意义。
+            await self.set_volume(level)
+            self._ducked_to = level
         self._duck_task = asyncio.create_task(self._unduck_after(seconds))
 
     def _remember_duck_from(self, value: float | None) -> None:
