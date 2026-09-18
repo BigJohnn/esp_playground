@@ -339,6 +339,23 @@ class VolumeOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.2)
         self.assertEqual(self.vol, 1.0)
 
+    async def test_repeated_wakes_still_restore(self):
+        """压制窗口内**再次唤醒** —— 连续对话里这是常态，不是边缘情况。
+
+        2026-09-17 的回归就出在这儿：为了不抬高"用户故意调低的音量"，
+        我加的早退写在了 cancel 之后 —— 第二次唤醒先把恢复任务取消掉，
+        再因为"音量已经是 12 了"直接 return，恢复被吞且再没排上，
+        系统音量永久停在 12。日志里连着刷"当前音量 12 看着像是上次没恢复的压制值"。
+        """
+        await self.air.duck(self.level, 0.3)
+        self.assertEqual(self.vol, self.level)
+        await asyncio.sleep(0.05)
+        await self.air.duck(self.level, 0.3)      # 窗口内第二次唤醒
+        await asyncio.sleep(0.05)
+        await self.air.duck(self.level, 0.3)      # 第三次
+        await asyncio.sleep(0.6)
+        self.assertEqual(self.vol, 40.0, "连续唤醒之后音量必须回到 40，不能卡在压制档位")
+
     async def test_untouched_duck_still_restores(self):
         """没人插手时必须照旧恢复 —— 别为了修上面两条把压音量本身废掉。"""
         await self.air.duck(self.level, 0.05)
@@ -372,6 +389,39 @@ class VolumeIntentTests(unittest.TestCase):
                 i = intent.parse(text, ["tivoli", "music", "light", "aircon"])
                 self.assertEqual(i.action, "volume_step")
                 self.assertEqual(i.slots.get("step"), step)
+
+    def test_generic_words_do_not_steal_other_devices_sentences(self):
+        """泛化规则没锚定就会去抢别人的句子 —— 这一类 bug 已经出现三次。
+
+        「音量调到1」-> light.brightness（set_pct 只看数字不看设备）
+        「切换歌曲」  -> light.toggle    （toggle 裸着一个"切换"）
+        「切换台灯」  -> tivoli.station_step（"换台"命中 FM 换台）
+
+        共同点：**日志里全是执行=True**，用户看到的是"设备乱动"或"没反应"，
+        而从日志完全看不出哪里错了。和 README §4.1.24「空调调到26」被灯抢走同源。
+        """
+        for text, domain, action in [
+            ("切换歌曲", "music", "next"),
+            ("换个歌", "music", "next"),
+            ("切换音乐", "music", "next"),
+            ("下一首歌", "music", "next"),
+            ("停止播放", "music", "stop"),
+            ("停止播放音乐", "music", "stop"),
+            ("切换台灯", "light", "toggle"),
+            ("把灯切换一下", "light", "toggle"),
+        ]:
+            with self.subTest(text=text):
+                i = intent.parse(text, ["music", "tivoli", "light", "aircon"])
+                self.assertEqual((i.domain, i.action), (domain, action))
+
+    def test_bare_generic_words_still_reach_the_lamp(self):
+        """锚定别锚过头：裸的「切换」还得是灯，FM 换台也不能误伤。"""
+        self.assertEqual(intent.parse("切换", ["light"]).action, "toggle")
+        self.assertEqual(intent.parse("反过来", ["light"]).action, "toggle")
+        for text in ("换个台", "下一个台", "切一个台", "搜台"):
+            with self.subTest(text=text):
+                i = intent.parse(text, ["tivoli", "music", "light", "aircon"])
+                self.assertEqual((i.domain, i.action), ("tivoli", "station_step"))
 
     def test_lamp_and_aircon_keep_their_numbers(self):
         for text, dom in [("调到百分之八十", "light"), ("调到一半", "light"),
